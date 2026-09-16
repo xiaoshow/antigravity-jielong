@@ -10,13 +10,18 @@
 widget 扫这 3 个 + 共享的 ~/.codex（Codex Desktop / 裸 codex 用的），
 对每个账号取"当前登着它、且快照最新"的那份数据。某账号哪个 home 都没登 → 显示未登录。
 
+共享的 ~/.codex 当前登的是哪个账号，那一行会加粗、变蓝、并在行尾加 "★本机当前登录"——
+那是裸 codex / Codex Desktop 现在实际会用的账号（三个 .codex-N 都是各自常驻登录，不存在
+"现在登的是谁"这回事，只有这个共享 home 同一时刻只能是一个账号，标出来才有意义）。
+
 数据每 60s 拉一次 `codex-usage.py --json`；倒计时每 1s 重算（一直在动）。零 token、不联网。
 跑: ~/.codex-widget-venv/bin/python ~/codex-widget.py
 """
 import os, json, subprocess, time, shutil, threading
 from concurrent.futures import ThreadPoolExecutor
 import rumps
-from AppKit import NSFont, NSAttributedString, NSFontAttributeName
+from AppKit import (NSFont, NSAttributedString, NSFontAttributeName,
+                     NSColor, NSForegroundColorAttributeName)
 
 DATA_REFRESH = 60          # 秒 —— 多久重读一次本地快照
 TICK = 1                   # 秒 —— 倒计时重画
@@ -51,15 +56,32 @@ def fetch(home, deep=False):
         return {"error": str(e)[:40]}
 
 
+PROXY_URL = "http://127.0.0.1:10808"        # ~/.zshrc 里配的本机 Xray/PassWall2 代理端口
+SOCKS_PROXY_URL = "socks5://127.0.0.1:10808"
+
+
 def probe_one(home):
     """跑一个极小的 codex 回合，逼服务端回一份最新 rate_limits 写进日志。单次成本≈0%。
     credits 耗尽的号会秒失败，无害。卡住的 90s 后杀掉。
 
     输入**必须每次不同**——2026-09-16 实测固定用 "." 时，1 分钟节奏下同一输入被后端当缓存
     命中，跳过真实回合，回合里压根没有 token_count 事件，读不到新额度（还误判成"探测成本
-    ≈0%"，其实是没真的跑）。换成带时间戳的 nonce 之后每次都能拿到真实 rate_limits。"""
+    ≈0%"，其实是没真的跑）。换成带时间戳的 nonce 之后每次都能拿到真实 rate_limits。
+
+    env 必须手动补代理变量——同一天又踩了一个坑：LaunchAgent 跑起来的进程**不会**
+    source `~/.zshrc`，所以 `os.environ` 里根本没有 `~/.zshrc` 里配的 HTTP_PROXY/
+    ALL_PROXY 这几个代理变量（本机翻墙靠它们）。实测复现：把 PATH 砍到 launchd 那么瘦
+    还不够触发，只有再把代理变量也去掉才会卡在 "ERROR: Reconnecting... 2/5" 一直到
+    90s 超时、且日志里连 token_count 都没有——补回代理变量后同一个请求 9 秒就回来了。
+    这才是"自动探测经常空转"真正的根因，不是之前以为的"并发互相顶掉"或"输入被去重"
+    （那两个也是真问题，但只是次要因素）。"""
     env = dict(os.environ)
     env["CODEX_HOME"] = os.path.expanduser(home)
+    env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:" + env.get("PATH", "")
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        env.setdefault(k, PROXY_URL)
+    for k in ("ALL_PROXY", "all_proxy"):
+        env.setdefault(k, SOCKS_PROXY_URL)
     nonce = f"probe {time.time():.3f}"
     try:
         subprocess.run([CODEX_BIN, "exec", "--skip-git-repo-check", "-c", "mcp_servers={}", nonce],
@@ -207,15 +229,20 @@ class CodexWidget(rumps.App):
         else:
             self.render()
 
-    def _set_row(self, num, text):
+    def _set_row(self, num, text, highlight=False):
         """设置下拉行文字，并额外套一份等宽字体的 attributedTitle 让多行按字段对齐
-        （菜单默认系统字体是比例字体，光靠空格补不齐）。"""
+        （菜单默认系统字体是比例字体，光靠空格补不齐）。
+        highlight=True：本机共享的 ~/.codex（裸 codex / Codex Desktop 用的那份登录态）
+        当前正是这个账号——加粗 + 强调色，一眼看出"现在登录的是哪个"。"""
         item = self.rows[num]
         item.title = text
         try:
-            font = NSFont.monospacedSystemFontOfSize_weight_(13, 0)
-            attr = NSAttributedString.alloc().initWithString_attributes_(
-                text, {NSFontAttributeName: font})
+            # weight 0 = regular, 0.3 ≈ semibold（NSFontWeight 的取值范围是 -1~1）
+            mono = NSFont.monospacedSystemFontOfSize_weight_(13, 0.3 if highlight else 0)
+            attrs = {NSFontAttributeName: mono}
+            if highlight:
+                attrs[NSForegroundColorAttributeName] = NSColor.systemBlueColor()
+            attr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
             item._menuitem.setAttributedTitle_(attr)
         except Exception:
             pass   # 等宽字体设置失败就退回普通 title，不影响可用性
@@ -230,9 +257,18 @@ class CodexWidget(rumps.App):
                    if d.get("snapshot_age_sec") is not None else 1e12)
 
     def render(self):
+        # 本机"现在登录哪个"= 共享的 ~/.codex（裸 codex / Codex Desktop 读的那份登录态）
+        # 当前的 auth 是哪个邮箱。三个 .codex-N 是各自独立常驻登录，不存在"现在登的是谁"这个
+        # 问题——只有这个共享 home 在任意时刻只能是一个账号，才有意义标出来。
+        shared = self.homes.get("~/.codex")
+        current_email = (shared.get("email")
+                          if isinstance(shared, dict) and not shared.get("error") else None)
+
         title = []
         for num, email in KNOWN:
             short = email.split("@")[0]
+            hl = (email == current_email)
+            mark = " ★本机当前登录" if hl else ""
             d = self._pick(email)
             if d is None:
                 # 分清"哪都没登" vs "登了但还没跑过(无快照)"
@@ -240,10 +276,10 @@ class CodexWidget(rumps.App):
                                 for x in self.homes.values())
                 if logged_in:
                     title.append(f"{num}:·")
-                    self._set_row(num, f"{num} {short:<{NAME_W}}已登录·还没跑过（codex{num} 跑一次即出数据）")
+                    self._set_row(num, f"{num} {short:<{NAME_W}}已登录·还没跑过（codex{num} 跑一次即出数据）{mark}", hl)
                 else:
                     title.append(f"{num}:—")
-                    self._set_row(num, f"{num} {short:<{NAME_W}}未登录（用 codex{num} 登）")
+                    self._set_row(num, f"{num} {short:<{NAME_W}}未登录（用 codex{num} 登）{mark}", hl)
                 continue
             p, s = d.get("primary"), d.get("secondary")
             cr = d.get("credits") or {}
@@ -251,14 +287,14 @@ class CodexWidget(rumps.App):
             if not p and not s:
                 if cr.get("has_credits") and cr.get("balance") is not None:
                     title.append(f"{num}:${cr['balance']}")
-                    self._set_row(num, f"{num} {short:<{NAME_W}}信用额度余 {cr['balance']}")
+                    self._set_row(num, f"{num} {short:<{NAME_W}}信用额度余 {cr['balance']}{mark}", hl)
                 elif cr.get("has_credits") is False or "credits" in reached:
                     title.append(f"{num}:⚠️")
                     self._set_row(num, f"{num} {short:<{NAME_W}}⚠️ 用量已尽 + credits=0"
-                                       f"（等窗口重置或充值；本地只有被拒记录，跑通一次后显示窗口%）")
+                                       f"（等窗口重置或充值；本地只有被拒记录，跑通一次后显示窗口%）{mark}", hl)
                 else:
                     title.append(f"{num}:—")
-                    self._set_row(num, f"{num} {short:<{NAME_W}}(暂无窗口数据)")
+                    self._set_row(num, f"{num} {short:<{NAME_W}}(暂无窗口数据){mark}", hl)
                 continue
             r5, rw = remain(p), remain(s)
             f5 = f"{r5:.0f}" if r5 is not None else "-"
@@ -267,7 +303,7 @@ class CodexWidget(rumps.App):
             bits = [b for b in (win_bit(p, "5h"), win_bit(s, "1w")) if b]
             age = d.get("snapshot_age_sec")
             agestr = f"  ·{dur(age)}前快照" if age and age > 300 else ""
-            self._set_row(num, f"{num} {short:<{NAME_W}}" + "  ".join(bits) + agestr)
+            self._set_row(num, f"{num} {short:<{NAME_W}}" + "  ".join(bits) + agestr + mark, hl)
 
         self.title = "  ".join(title)
         self.i_upd.title = ("数据 " + time.strftime("%H:%M:%S", time.localtime(self.last_pull))
