@@ -1,0 +1,8 @@
+# This repo is scoped ON PURPOSE to a small allowlist of dotfiles/scripts in $HOME.
+# Everything is ignored by default; only explicitly un-ignored paths below are tracked.
+# Never `git add -A` / `git add .` here — always add specific paths.
+*
+
+!/.gitignore
+!/codex-widget.py
+!/codex-usage.py
