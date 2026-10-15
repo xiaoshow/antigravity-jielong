@@ -183,10 +183,6 @@ class CodexWidget(rumps.App):
             rumps.MenuItem("立即刷新(读本地)", callback=lambda _: self.pull_async()),
             rumps.MenuItem("现在探测所有账号（会消耗额度）", callback=self.on_probe),
             None,
-            rumps.MenuItem("切换到账号 1", callback=lambda _: self.on_switch("1")),
-            rumps.MenuItem("切换到账号 2", callback=lambda _: self.on_switch("2")),
-            rumps.MenuItem("切换到账号 3", callback=lambda _: self.on_switch("3")),
-            None,
             rumps.MenuItem("退出", callback=rumps.quit_application),
         ]
         rumps.Timer(self.tick, TICK).start()
@@ -208,33 +204,6 @@ class CodexWidget(rumps.App):
         self.probe()
         # 探测要 ~40s 才有结果，排个延迟 pull
         threading.Timer(45, self.pull_async).start()
-
-    def on_switch(self, num):
-        """切换到指定账号（在共享的 ~/.codex 里）。"""
-        email = None
-        for n, e in KNOWN:
-            if n == num:
-                email = e
-                break
-        if not email:
-            return
-
-        def run():
-            env = dict(os.environ)
-            # 注意：这里切换的是共享的 ~/.codex，不是 ~/.codex-N
-            env["CODEX_HOME"] = os.path.expanduser("~/.codex")
-            for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                env.setdefault(k, PROXY_URL)
-            for k in ("ALL_PROXY", "all_proxy"):
-                env.setdefault(k, SOCKS_PROXY_URL)
-            try:
-                subprocess.run([CODEX_BIN, "login", email], env=env, timeout=30)
-            except Exception:
-                pass
-            # 登录完立即刷新展示
-            threading.Timer(2, self.pull_async).start()
-
-        threading.Thread(target=run, daemon=True).start()
 
     @staticmethod
     def _usable(d):
