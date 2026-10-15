@@ -176,10 +176,6 @@ class CodexWidget(rumps.App):
         self.pending = None        # 后台线程读完的数据，交给主线程的 tick 去应用
         self.rows = {num: rumps.MenuItem("…") for num, _ in KNOWN}
         self.i_upd = rumps.MenuItem("—")
-        self.switch_items = {
-            num: rumps.MenuItem(f"切换到账号 {num}", callback=lambda _, n=num: self.on_switch(n))
-            for num, _ in KNOWN
-        }
         self.menu = [
             *self.rows.values(),
             None,
@@ -187,7 +183,10 @@ class CodexWidget(rumps.App):
             rumps.MenuItem("立即刷新(读本地)", callback=lambda _: self.pull_async()),
             rumps.MenuItem("现在探测所有账号（会消耗额度）", callback=self.on_probe),
             None,
-            rumps.MenuItem("切换账号", submenu=[*self.switch_items.values()]),
+            rumps.MenuItem("切换到账号 1", callback=lambda _: self.on_switch("1")),
+            rumps.MenuItem("切换到账号 2", callback=lambda _: self.on_switch("2")),
+            rumps.MenuItem("切换到账号 3", callback=lambda _: self.on_switch("3")),
+            None,
             rumps.MenuItem("退出", callback=rumps.quit_application),
         ]
         rumps.Timer(self.tick, TICK).start()
