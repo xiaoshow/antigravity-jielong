@@ -7,25 +7,27 @@
 **按账号固定显示**，不随你 `codex login` 切换而变：
   1 = xiaoshow@gmail.com   2 = hoyingse@gmail.com   3 = g56320935@gmail.com
 每个账号有独立 home（~/.codex-1 / -2 / -3，用 codex1/codex2/codex3 跑）；
-widget 扫这 3 个 + 共享的 ~/.codex（Codex Desktop / 裸 codex 用的），
-对每个账号取"当前登着它、且快照最新"的那份数据。某账号哪个 home 都没登 → 显示未登录。
+再加上共享的 ~/.codex（Codex Desktop / 裸 codex 用的）里"切换登录之后"写出的快照——
+比 auth.json 旧的快照可能属于上一个号，一律不用。某账号自己的目录没登 → 显示未登录。
 
 共享的 ~/.codex 当前登的是哪个账号，那一行会加粗、变蓝、并在行尾加 "★本机当前登录"——
 那是裸 codex / Codex Desktop 现在实际会用的账号（三个 .codex-N 都是各自常驻登录，不存在
 "现在登的是谁"这回事，只有这个共享 home 同一时刻只能是一个账号，标出来才有意义）。
 
-数据每 60s 拉一次 `codex-usage.py --json`；倒计时每 1s 重算（一直在动）。零 token、不联网。
+数据每 60s 从现有会话日志读取一次；倒计时每 1s 重算（一直在动）。自动刷新零 token、不联网。
+只有手动点击“现在探测所有账号”才会发起真实 `codex exec` 并消耗额度。
 跑: ~/.codex-widget-venv/bin/python ~/codex-widget.py
 """
 import os, json, subprocess, time, shutil, threading
 from concurrent.futures import ThreadPoolExecutor
 import rumps
+import objc
+import importlib.util
 from AppKit import (NSFont, NSAttributedString, NSFontAttributeName,
                      NSColor, NSForegroundColorAttributeName)
 
 DATA_REFRESH = 60          # 秒 —— 多久重读一次本地快照
-TICK = 1                   # 秒 —— 倒计时重画
-PROBE_EVERY = 60           # 秒 —— 多久主动跑一次 codex 拉最新用量（实测单次 ≈0% 额度）
+TICK = 5                   # 秒 —— 倒计时重画，减少菜单原生对象创建
 LOW_PCT = 20
 CODEX_BIN = shutil.which("codex") or "/opt/homebrew/bin/codex"
 PROBE_HOMES = ["~/.codex-1", "~/.codex-2", "~/.codex-3"]
@@ -38,6 +40,17 @@ KNOWN = [
 ]
 SCAN_HOMES = ["~/.codex", "~/.codex-1", "~/.codex-2", "~/.codex-3"]
 NAME_W = max(len(email.split("@")[0]) for _, email in KNOWN) + 1   # 账号名对齐宽度
+_usage_api = None
+
+def usage_api():
+    """只加载一次，保留接口模块的刷新冷却与锁。"""
+    global _usage_api
+    if _usage_api is None:
+        spec = importlib.util.spec_from_file_location("codex_usage_api", os.path.expanduser("~/codex_usage_api.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _usage_api = module
+    return _usage_api
 
 
 def fetch(home, deep=False):
@@ -107,8 +120,17 @@ def dur(sec):
     return f"{s}s"
 
 
+def expired(w):
+    ra = w.get("resets_at") if w else None
+    return bool(ra) and ra <= time.time()
+
+
 def remain(w):
-    return 100 - (w.get("used_percent") or 0) if w else None
+    if not w:
+        return None
+    if expired(w):
+        return 100.0        # 重置点已过：窗口早已回满，快照里的 used_percent 是旧的
+    return 100 - (w.get("used_percent") or 0)
 
 
 def abs_reset(ts):
@@ -126,8 +148,16 @@ def win_bit(w, short):
     resets_at = w.get("resets_at")
     cd = dur(resets_at - time.time()) if resets_at else "?"
     cd_w = 9 if short == "5h" else 6          # "4h58m33s"≈9 / "6d23h"≈6
+    gone = expired(w)
+    if gone:
+        cd = "—"
     pct = f"{rr:>3.0f}%" if rr is not None else " -%"
     flag = "🔴" if rr is not None and rr < LOW_PCT else "  "
+    if gone:
+        # 重置点已过：不再写过去的时刻（看着像没更新），倒计时列放"—"，重置列写"已重置"。
+        # "HH:MM重置"占 9 格、"MM/DD HH:MM重置"占 15 格，"已重置"占 6 格，补空格保持列宽
+        reset_str = "已重置" + " " * (3 if short == "5h" else 9)
+        return f"{short}余{pct} ⏳{cd:<{cd_w}}{flag} {reset_str}"
     if resets_at:
         reset_str = (time.strftime("%H:%M", time.localtime(resets_at)) if short == "5h"
                      else abs_reset(resets_at))
@@ -142,29 +172,33 @@ class CodexWidget(rumps.App):
         self.homes = {}
         self.last_good = {}        # home -> 最近一次成功(无 error)的快照，探测没拉到新数据时兜底
         self.last_pull = 0.0
+        self.pulling = False
+        self.pending = None        # 后台线程读完的数据，交给主线程的 tick 去应用
         self.rows = {num: rumps.MenuItem("…") for num, _ in KNOWN}
         self.i_upd = rumps.MenuItem("—")
+        self.switch_items = {
+            num: rumps.MenuItem(f"切换到账号 {num}", callback=lambda _, n=num: self.on_switch(n))
+            for num, _ in KNOWN
+        }
         self.menu = [
             *self.rows.values(),
             None,
             self.i_upd,
-            rumps.MenuItem("立即刷新(读本地)", callback=self.pull),
-            rumps.MenuItem("现在探测所有账号(≈0额度)", callback=self.on_probe),
+            rumps.MenuItem("立即刷新(读本地)", callback=lambda _: self.pull_async()),
+            rumps.MenuItem("现在探测所有账号（会消耗额度）", callback=self.on_probe),
             None,
+            rumps.MenuItem("切换账号", submenu=[*self.switch_items.values()]),
             rumps.MenuItem("退出", callback=rumps.quit_application),
         ]
-        self.last_probe = time.time() - PROBE_EVERY + 90   # 启动 90s 后先探一次
         rumps.Timer(self.tick, TICK).start()
-        self.pull(None)
+        self.pull_async()
 
     def probe(self):
         """三个号**必须串行探测**，不能像之前那样同时起 3 个线程并发跑
         `codex exec`——2026-09-16 实测：三个探测一旦同时起跑，哪怕每个的输入都不同（nonce），
         全部拿不到 token_count（本地并发互相顶掉了，具体机制不明，但现象很稳定可复现）；
         改成一个后台线程里挨个跑，各账号都能稳定拿到真实 rate_limits。串行下 3 个号总共约
-        30-60s 跑完，仍在一个 PROBE_EVERY 周期内。"""
-        self.last_probe = time.time()
-
+        30-60s 跑完。"""
         def run_all():
             for h in PROBE_HOMES:
                 probe_one(h)
@@ -174,7 +208,34 @@ class CodexWidget(rumps.App):
     def on_probe(self, _):
         self.probe()
         # 探测要 ~40s 才有结果，排个延迟 pull
-        threading.Timer(45, lambda: self.pull(None)).start()
+        threading.Timer(45, self.pull_async).start()
+
+    def on_switch(self, num):
+        """切换到指定账号（在共享的 ~/.codex 里）。"""
+        email = None
+        for n, e in KNOWN:
+            if n == num:
+                email = e
+                break
+        if not email:
+            return
+
+        def run():
+            env = dict(os.environ)
+            # 注意：这里切换的是共享的 ~/.codex，不是 ~/.codex-N
+            env["CODEX_HOME"] = os.path.expanduser("~/.codex")
+            for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                env.setdefault(k, PROXY_URL)
+            for k in ("ALL_PROXY", "all_proxy"):
+                env.setdefault(k, SOCKS_PROXY_URL)
+            try:
+                subprocess.run([CODEX_BIN, "login", email], env=env, timeout=30)
+            except Exception:
+                pass
+            # 登录完立即刷新展示
+            threading.Timer(2, self.pull_async).start()
+
+        threading.Thread(target=run, daemon=True).start()
 
     @staticmethod
     def _usable(d):
@@ -183,7 +244,23 @@ class CodexWidget(rumps.App):
         这种记录不能当成"最近一次成功"存起来，否则会把之前真实的百分比覆盖掉。"""
         return isinstance(d, dict) and not d.get("error") and (d.get("primary") or d.get("secondary"))
 
-    def pull(self, _):
+    def pull_async(self):
+        """读数据放后台线程。以前 pull 直接跑在主线程（Timer 回调），读日志 + 起 4 个子进程
+        期间菜单栏点不开；探测完成后还会从 threading.Timer 线程直接调 pull 去改 AppKit 控件，
+        非主线程动 UI 会让菜单卡死。现在后台只算数据，UI 一律由主线程的 tick 应用。"""
+        if self.pulling:
+            return
+        self.pulling = True
+        self.last_pull = time.time()
+
+        def run():
+            try:
+                self.pending = self.collect()
+            finally:
+                self.pulling = False
+        threading.Thread(target=run, daemon=True).start()
+
+    def collect(self):
         try:
             with ThreadPoolExecutor(max_workers=len(SCAN_HOMES)) as ex:
                 fresh = dict(ex.map(lambda h: (h, fetch(h)), SCAN_HOMES))
@@ -217,16 +294,55 @@ class CodexWidget(rumps.App):
             if cd2.get("snapshot_age_sec") is not None:
                 cd2["snapshot_age_sec"] += int(now - captured_at)
             homes[h] = cd2
-        self.homes = homes
-        self.last_pull = now
-        self.render()
+        self._label_shared(homes)
+        # 以官方接口为准（实时、零额度）。本地日志只在接口失败时兜底——日志只有在
+        # ~/.codex-N 里跑过任务才更新，在 Desktop 里用的号会显示成十几个小时前的旧数。
+        try:
+            live = usage_api().fetch_all()
+        except Exception:
+            live = {"accounts": []}
+        for a in live["accounts"]:
+            if a.get("error") or not a.get("five"):
+                continue
+            for h in list(homes):
+                if isinstance(homes[h], dict) and homes[h].get("email") == a["email"]:
+                    homes[h] = dict(homes[h], email=None)   # 本地旧快照不再参与该号取数
+            homes[f"api#{a['num']}"] = {
+                "email": a["email"],
+                "primary": {"used_percent": a["five"]["used"], "window_minutes": 300, "resets_at": a["five"]["reset_at"]},
+                "secondary": {"used_percent": a["week"]["used"], "window_minutes": 10080, "resets_at": a["week"]["reset_at"]},
+                "credits": {}, "reached": "", "snapshot_age_sec": 0,
+            }
+        return homes
+
+    @staticmethod
+    def _label_shared(homes):
+        """共享 ~/.codex（Codex Desktop 用的）：只认"切换登录之后"写出来的快照。
+        每次切号 auth.json 都会被重写，所以快照所在文件比 auth.json 新，才一定属于当前登录的号；
+        比它旧的可能是上一个号留下的，不用（2026-09-30 切到 g56320935 后，xiaoshow 的 5h 余 15%
+        曾被安到 3 号头上）。auth.json 不存在（Desktop 登出）也不用。
+        这样正在用的号零成本实时准确，另外两个号显示各自 ~/.codex-N 里的上次读数。
+        原邮箱另存 auth_email 给 ★ 用。"""
+        shared = homes.get("~/.codex")
+        if not isinstance(shared, dict):
+            return
+        shared["auth_email"] = shared.get("email")
+        try:
+            auth_mtime = os.path.getmtime(os.path.expanduser("~/.codex/auth.json"))
+        except OSError:
+            shared["email"] = None
+            return
+        age = shared.get("snapshot_age_sec")
+        if age is None or time.time() - age <= auth_mtime:
+            shared["email"] = None
 
     def tick(self, _):
-        if time.time() - self.last_probe >= PROBE_EVERY:
-            self.probe()
-        if time.time() - self.last_pull >= DATA_REFRESH:
-            self.pull(None)
-        else:
+        if self.pending is not None:
+            self.homes, self.pending = self.pending, None
+        elif time.time() - self.last_pull >= DATA_REFRESH:
+            self.pull_async()
+        # PyObjC 定时回调中创建的临时 Cocoa 对象及时释放。
+        with objc.autorelease_pool():
             self.render()
 
     def _set_row(self, num, text, highlight=False):
@@ -235,6 +351,9 @@ class CodexWidget(rumps.App):
         highlight=True：本机共享的 ~/.codex（裸 codex / Codex Desktop 用的那份登录态）
         当前正是这个账号——加粗 + 强调色，一眼看出"现在登录的是哪个"。"""
         item = self.rows[num]
+        if getattr(item, "_claude_last", None) == (text, highlight):
+            return
+        item._claude_last = (text, highlight)
         item.title = text
         try:
             # weight 0 = regular, 0.3 ≈ semibold（NSFontWeight 的取值范围是 -1~1）
@@ -261,7 +380,7 @@ class CodexWidget(rumps.App):
         # 当前的 auth 是哪个邮箱。三个 .codex-N 是各自独立常驻登录，不存在"现在登的是谁"这个
         # 问题——只有这个共享 home 在任意时刻只能是一个账号，才有意义标出来。
         shared = self.homes.get("~/.codex")
-        current_email = (shared.get("email")
+        current_email = (shared.get("auth_email", shared.get("email"))
                           if isinstance(shared, dict) and not shared.get("error") else None)
 
         title = []
@@ -305,9 +424,13 @@ class CodexWidget(rumps.App):
             agestr = f"  ·{dur(age)}前快照" if age and age > 300 else ""
             self._set_row(num, f"{num} {short:<{NAME_W}}" + "  ".join(bits) + agestr + mark, hl)
 
-        self.title = "  ".join(title)
-        self.i_upd.title = ("数据 " + time.strftime("%H:%M:%S", time.localtime(self.last_pull))
-                            + " 拉取 · 倒计时每秒实时")
+        new_title = "  ".join(title)
+        if self.title != new_title:
+            self.title = new_title
+        update_title = ("数据 " + time.strftime("%H:%M:%S", time.localtime(self.last_pull))
+                        + " 本地读取 · 自动刷新零 Token")
+        if self.i_upd.title != update_title:
+            self.i_upd.title = update_title
 
 
 if __name__ == "__main__":
