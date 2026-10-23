@@ -3,7 +3,7 @@
 Antigravity Multi-Account Quota & Switcher HUD (1号 / 2号 / 3号 三号接龙版)
 - 支持 1号、2号、3号 三账号同屏监控与一键热切
 - 加上 Argon 6天倒计时 (如: 6d23h)
-- 实时高频多账号轮询 (自动轮询所有已绑定槽位)
+- 互斥锁保护切号流程，杜绝后台轮询覆盖刚切好的 Keychain 凭证
 - 支持未绑定槽位直接点击悬浮窗一键调起浏览器授权绑定
 """
 
@@ -13,6 +13,7 @@ import tkinter as tk
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
 CACHE_FILE = os.path.expanduser("~/.gemini/account_vault/multi_quota_cache.json")
 CLI_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
+STANDALONE_TOKEN_FILE = os.path.expanduser("~/.gemini/jetski-standalone-oauth-token")
 APP_STORAGE = os.path.expanduser("~/Library/Application Support/Antigravity/app_storage.json")
 os.makedirs(VAULT_DIR, exist_ok=True)
 
@@ -57,13 +58,16 @@ class MultiAccountHUD:
         self.drag_start_y = 0
         self.has_moved = False
         
+        self.keychain_lock = threading.Lock()
+        self.switching_slot = False
+        self.is_fetching = False
+        self.is_binding = False
+        self.last_fetch_ts = 0
+        
         self.account_emails = self.load_emails()
         self.active_slot = self.detect_current_slot()
         self.active_model_group = self.detect_active_model_group()
         self.account_data = {}
-        self.is_fetching = False
-        self.is_binding = False
-        self.last_fetch_ts = 0
         
         self.load_cache()
         self.setup_ui()
@@ -112,7 +116,6 @@ class MultiAccountHUD:
                     email = json.loads(base64.urlsafe_b64decode(pad)).get("email", "").lower()
                     if email:
                         return email
-            # Fallback: query Google userinfo using access_token
             acc_tok = data.get("token", {}).get("access_token", "")
             if acc_tok:
                 req = urllib.request.Request(
@@ -143,6 +146,44 @@ class MultiAccountHUD:
                 except Exception:
                     emails[slot] = ""
         return emails
+
+    def apply_slot_credentials(self, slot):
+        """将指定槽位凭证同步写入 Keychain、standalone-oauth-token 与 app_storage.json"""
+        tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
+        if not os.path.exists(tpath):
+            return False
+        with open(tpath) as f:
+            raw = f.read().strip()
+        if not raw:
+            return False
+
+        # 1. 写入系统 Keychain
+        subprocess.run(
+            ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", raw],
+            check=False, stderr=subprocess.DEVNULL
+        )
+
+        # 2. 写入 ~/.gemini/jetski-standalone-oauth-token
+        try:
+            b64_part = raw.replace("go-keyring-base64:", "")
+            decoded_json = base64.b64decode(b64_part).decode("utf-8")
+            with open(STANDALONE_TOKEN_FILE, "w", encoding="utf-8") as sf:
+                sf.write(decoded_json)
+        except Exception:
+            pass
+
+        # 3. 更新 Desktop app_storage.json
+        email = self.account_emails.get(slot, "")
+        if email and os.path.exists(APP_STORAGE):
+            try:
+                with open(APP_STORAGE, "r", encoding="utf-8") as af:
+                    st = json.load(af)
+                st["jetski.onboarding.lastLoginUsername"] = email
+                with open(APP_STORAGE, "w", encoding="utf-8") as af:
+                    json.dump(st, af, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+        return True
 
     def on_press(self, event):
         self.drag_start_x = event.x
@@ -180,7 +221,6 @@ class MultiAccountHUD:
             if cur_email:
                 for slot in SLOTS:
                     if self.account_emails.get(slot, "").lower() == cur_email:
-                        # Inject id_token_email and keep vault token fresh
                         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
                         try:
                             raw = cur.replace("go-keyring-base64:", "")
@@ -194,7 +234,7 @@ class MultiAccountHUD:
                         return slot
         except Exception:
             pass
-        return "1"
+        return "2"
 
     def load_cache(self):
         if os.path.exists(CACHE_FILE):
@@ -235,8 +275,13 @@ class MultiAccountHUD:
         cur_c5 = cur_d.get("c5h_pct", 100.0)
         is_cur_dead = (cur_cwk <= 0.01 or cur_d.get("c5h_reset") == "DISABLED")
 
-        if self.is_binding:
+        if self.switching_slot:
+            rec_text = f" · 正在切换至 {self.active_slot}号..."
+        elif self.is_binding:
             rec_text = " · 正在浏览器授权绑定..."
+        elif self.active_model_group == "argon":
+            cur_arg = cur_d.get("argon_pct", 0.0)
+            rec_text = f" · Argon {cur_arg:.0f}% 活跃"
         elif is_cur_dead:
             rec_text = f" · 建议切{best_slot}号!" if best_slot and best_slot != self.active_slot else " · Claude已耗尽"
         elif best_slot and best_slot != self.active_slot and (self.account_data.get(best_slot, {}).get("c5h_pct", 0) > cur_c5 + 30):
@@ -526,29 +571,33 @@ class MultiAccountHUD:
             if not os.path.exists(tpath):
                 continue
             d = self.account_data.get(slot, {})
-            cwk = d.get("cwk_pct", 0.0)
-            c5 = d.get("c5h_pct", 0.0)
-            if cwk <= 0.01 or d.get("c5h_reset") == "DISABLED":
-                score = -100.0
+            if self.active_model_group == "argon":
+                score = d.get("argon_pct", 0.0)
+            elif self.active_model_group == "gemini":
+                score = d.get("g5h_pct", 0.0)
             else:
-                score = c5
+                cwk = d.get("cwk_pct", 0.0)
+                c5 = d.get("c5h_pct", 0.0)
+                score = -100.0 if (cwk <= 0.01 or d.get("c5h_reset") == "DISABLED") else c5
             if score > best_score:
                 best_score = score
                 best_slot = slot
         return best_slot
 
     def bind_new_slot(self, slot):
-        if self.is_binding:
+        if self.is_binding or self.switching_slot:
             return
         self.is_binding = True
         self.setup_ui()
 
         def worker():
             try:
-                script_path = os.path.join(VAULT_DIR, "login_account.py")
-                subprocess.run(["python3", script_path, str(slot)], check=False)
-                self.account_emails = self.load_emails()
-                self.active_slot = slot
+                with self.keychain_lock:
+                    script_path = os.path.join(VAULT_DIR, "login_account.py")
+                    subprocess.run(["python3", script_path, str(slot)], check=False)
+                    self.account_emails = self.load_emails()
+                    self.active_slot = slot
+                    self.apply_slot_credentials(slot)
             except Exception:
                 pass
             finally:
@@ -558,122 +607,111 @@ class MultiAccountHUD:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def update_app_storage_email(self, email):
-        if not email or not os.path.exists(APP_STORAGE):
-            return
-        try:
-            with open(APP_STORAGE, "r", encoding="utf-8") as f:
-                st = json.load(f)
-            st["jetski.onboarding.lastLoginUsername"] = email
-            with open(APP_STORAGE, "w", encoding="utf-8") as f:
-                json.dump(st, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-
     def switch_to_slot(self, slot):
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
         if not os.path.exists(tpath):
             self.bind_new_slot(slot)
             return
+        if self.switching_slot:
+            return
 
-        with open(tpath) as f:
-            raw = f.read().strip()
-
-        subprocess.run(["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", raw], check=True)
+        # 立即设定目标槽位，防止任何后台刷新恢复旧槽位
         self.active_slot = slot
-        email = self.account_emails.get(slot, "")
-        self.update_app_storage_email(email)
+        self.switching_slot = True
         self.setup_ui()
 
         def reload_app():
-            subprocess.run(["osascript", "-e", 'tell application "Antigravity" to quit'], check=False)
-            time.sleep(0.8)
-            subprocess.run(["pkill", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
-            time.sleep(0.6)
-            subprocess.run(["open", "-a", "Antigravity"], check=False)
-            self.trigger_refresh()
+            try:
+                with self.keychain_lock:
+                    self.apply_slot_credentials(slot)
+                    subprocess.run(["osascript", "-e", 'tell application "Antigravity" to quit'], check=False)
+                    time.sleep(0.9)
+                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
+                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
+                    time.sleep(0.5)
+                    # 再次确保持久化写入，彻底杜绝残留进程回写
+                    self.apply_slot_credentials(slot)
+                    subprocess.run(["open", "-a", "Antigravity"], check=False)
+                    time.sleep(2.5)
+            finally:
+                self.switching_slot = False
+                self.root.after(0, self.setup_ui)
+                self.root.after(500, self.trigger_refresh)
 
         threading.Thread(target=reload_app, daemon=True).start()
 
     def trigger_refresh(self):
-        if self.is_fetching or self.is_binding:
+        if self.is_fetching or self.is_binding or self.switching_slot:
             return
         self.is_fetching = True
 
         def worker():
             try:
-                cur_keychain_tok = None
-                try:
-                    cur_keychain_tok = subprocess.check_output(
-                        ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
-                        stderr=subprocess.DEVNULL
-                    ).decode().strip()
-                except Exception:
-                    pass
-
                 for s in SLOTS:
+                    if self.switching_slot:
+                        break
                     tok_path = os.path.join(VAULT_DIR, f"acc{s}.token")
                     if not os.path.exists(tok_path):
                         continue
-                    try:
-                        with open(tok_path) as tf:
-                            slot_token = tf.read().strip()
-                        if not slot_token:
-                            continue
+                    with self.keychain_lock:
+                        if self.switching_slot:
+                            break
+                        try:
+                            with open(tok_path) as tf:
+                                slot_token = tf.read().strip()
+                            if not slot_token:
+                                continue
 
-                        subprocess.run(
-                            ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
-                            check=True, stderr=subprocess.DEVNULL
-                        )
-                        cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
-                        res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
-                        if res.returncode == 0:
-                            d = json.loads(res.stdout)
-                            groups = d.get("command", {}).get("data", {}).get("groups", [])
-                            if s not in self.account_data:
-                                self.account_data[s] = {}
-
-                            for g in groups:
-                                gname = g.get("name", "").lower()
-                                for b in g.get("buckets", []):
-                                    bid = b.get("id", "").lower()
-                                    disabled = b.get("disabled", False)
-                                    frac = b.get("remaining_fraction", 0.0) * 100.0
-                                    rtime = b.get("reset_time", "")
-                                    
-                                    if "argon" in bid or "argon" in gname:
-                                        self.account_data[s]["argon_pct"] = frac
-                                        self.account_data[s]["argon_reset"] = rtime
-                                    elif "3p" in bid or "claude" in gname:
-                                        if "5h" in bid or "five" in bid:
-                                            if disabled:
-                                                self.account_data[s]["c5h_pct"] = 0.0
-                                                self.account_data[s]["c5h_reset"] = "DISABLED"
-                                            else:
-                                                self.account_data[s]["c5h_pct"] = frac
-                                                self.account_data[s]["c5h_reset"] = rtime
-                                        else:
-                                            self.account_data[s]["cwk_pct"] = frac
-                                            self.account_data[s]["cwk_reset"] = rtime
-                                    elif "gemini" in gname:
-                                        if "5h" in bid or "five" in bid:
-                                            self.account_data[s]["g5h_pct"] = frac
-                                            self.account_data[s]["g5h_reset"] = rtime
-                                        else:
-                                            self.account_data[s]["gwk_pct"] = frac
-                                            self.account_data[s]["gwk_reset"] = rtime
-                            
-                            if self.account_data[s].get("cwk_pct", 100.0) <= 0.01:
-                                self.account_data[s]["c5h_pct"] = 0.0
-                                self.account_data[s]["c5h_reset"] = "DISABLED"
-                    except Exception:
-                        pass
-                    finally:
-                        if cur_keychain_tok:
                             subprocess.run(
-                                ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", cur_keychain_tok],
-                                check=False, stderr=subprocess.DEVNULL
+                                ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
+                                check=True, stderr=subprocess.DEVNULL
                             )
+                            cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
+                            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                            if res.returncode == 0:
+                                d = json.loads(res.stdout)
+                                groups = d.get("command", {}).get("data", {}).get("groups", [])
+                                if s not in self.account_data:
+                                    self.account_data[s] = {}
+
+                                for g in groups:
+                                    gname = g.get("name", "").lower()
+                                    for b in g.get("buckets", []):
+                                        bid = b.get("id", "").lower()
+                                        disabled = b.get("disabled", False)
+                                        frac = b.get("remaining_fraction", 0.0) * 100.0
+                                        rtime = b.get("reset_time", "")
+                                        
+                                        if "argon" in bid or "argon" in gname:
+                                            self.account_data[s]["argon_pct"] = frac
+                                            self.account_data[s]["argon_reset"] = rtime
+                                        elif "3p" in bid or "claude" in gname:
+                                            if "5h" in bid or "five" in bid:
+                                                if disabled:
+                                                    self.account_data[s]["c5h_pct"] = 0.0
+                                                    self.account_data[s]["c5h_reset"] = "DISABLED"
+                                                else:
+                                                    self.account_data[s]["c5h_pct"] = frac
+                                                    self.account_data[s]["c5h_reset"] = rtime
+                                            else:
+                                                self.account_data[s]["cwk_pct"] = frac
+                                                self.account_data[s]["cwk_reset"] = rtime
+                                        elif "gemini" in gname:
+                                            if "5h" in bid or "five" in bid:
+                                                self.account_data[s]["g5h_pct"] = frac
+                                                self.account_data[s]["g5h_reset"] = rtime
+                                            else:
+                                                self.account_data[s]["gwk_pct"] = frac
+                                                self.account_data[s]["gwk_reset"] = rtime
+                                
+                                if self.account_data[s].get("cwk_pct", 100.0) <= 0.01:
+                                    self.account_data[s]["c5h_pct"] = 0.0
+                                    self.account_data[s]["c5h_reset"] = "DISABLED"
+                        except Exception:
+                            pass
+                        finally:
+                            # 始终恢复为当前最新选中的 active_slot，绝不恢复过期的旧快照！
+                            self.apply_slot_credentials(self.active_slot)
                 self.save_cache()
             except Exception:
                 pass
@@ -690,7 +728,7 @@ class MultiAccountHUD:
         for lbl, rtime in getattr(self, "time_labels", []):
             lbl.configure(text=self.format_countdown(rtime))
             
-        if not self.is_fetching and not self.is_binding and (time.time() - self.last_fetch_ts >= 25):
+        if not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
             
         self.root.after(1000, self.tick)

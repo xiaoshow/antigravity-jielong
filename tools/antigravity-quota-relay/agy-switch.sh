@@ -2,6 +2,7 @@
 # 一键秒切账号（支持 1号 / 2号 / 3号...）并彻底重载桌面与后台服务
 SLOT="$1"
 VAULT_DIR="$HOME/.gemini/account_vault"
+STANDALONE_TOKEN_FILE="$HOME/.gemini/jetski-standalone-oauth-token"
 APP_STORAGE="$HOME/Library/Application Support/Antigravity/app_storage.json"
 
 if [ -z "$SLOT" ]; then
@@ -19,42 +20,38 @@ if [ ! -f "$TOKEN_FILE" ]; then
     fi
 fi
 
-RAW=$(cat "$TOKEN_FILE")
-security add-generic-password -U -s "gemini" -a "antigravity" -w "$RAW"
-
-# 提取邮箱并同步更新桌面端 app_storage.json
-EMAIL=$(python3 -c "
-import json, base64
-try:
-    raw = '''$RAW'''.strip().replace('go-keyring-base64:', '')
-    d = json.loads(base64.b64decode(raw))
-    print(d.get('id_token_email', ''))
-except Exception:
-    pass
-")
-
-if [ -n "$EMAIL" ] && [ -f "$APP_STORAGE" ]; then
+apply_creds() {
+    RAW=$(cat "$TOKEN_FILE")
+    security add-generic-password -U -s "gemini" -a "antigravity" -w "$RAW"
     python3 -c "
-import json
-p = '''$APP_STORAGE'''
-try:
-    with open(p, 'r') as f: st = json.load(f)
-    st['jetski.onboarding.lastLoginUsername'] = '''$EMAIL'''
-    with open(p, 'w') as f: json.dump(st, f, indent=2, ensure_ascii=False)
-except Exception:
-    pass
+import json, base64, os
+raw = '''$RAW'''.strip().replace('go-keyring-base64:', '')
+decoded = base64.b64decode(raw).decode('utf-8')
+with open(os.path.expanduser('$STANDALONE_TOKEN_FILE'), 'w', encoding='utf-8') as f:
+    f.write(decoded)
+d = json.loads(decoded)
+email = d.get('id_token_email', '')
+app_st = os.path.expanduser('$APP_STORAGE')
+if email and os.path.exists(app_st):
+    with open(app_st, 'r', encoding='utf-8') as f: st = json.load(f)
+    st['jetski.onboarding.lastLoginUsername'] = email
+    with open(app_st, 'w', encoding='utf-8') as f: json.dump(st, f, indent=2, ensure_ascii=False)
+print(email)
 "
-fi
+}
 
-echo "✅ 系统 Keychain 已热切换到【${SLOT}号账号】(${EMAIL})！"
+EMAIL=$(apply_creds)
+echo "✅ 系统凭证已热切换到【${SLOT}号账号】(${EMAIL})！"
 
 # 如果桌面 App 正在运行，彻底清理 language_server 并冷重载
 if pgrep -x "Antigravity" > /dev/null; then
     echo "🔄 正在重载桌面 App 与后台服务（会话与项目上下文 100% 保持）..."
     osascript -e 'tell application "Antigravity" to quit' 2>/dev/null
-    sleep 0.8
-    pkill -f "Antigravity.app/Contents/Resources/bin/language_server" 2>/dev/null
-    sleep 0.6
+    sleep 0.9
+    pkill -9 -f "Antigravity.app/Contents/Resources/bin/language_server" 2>/dev/null
+    pkill -9 -f "Antigravity.app/Contents/MacOS/Antigravity" 2>/dev/null
+    sleep 0.5
+    apply_creds > /dev/null
     open -a "Antigravity"
-    echo "🎉 桌面端与 CLI 已全量满血切换至【${SLOT}号】！"
+    echo "🎉 桌面端与 CLI 已全量满血切换至【${SLOT}号】(${EMAIL})！"
 fi
