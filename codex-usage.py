@@ -45,9 +45,10 @@ def latest_ratelimit(prefer_window=False):
     if not files: return None, None
     files.sort(key=os.path.getmtime, reverse=True)
     fallback = None
-    # 探测越勤，越容易连续产出一串没有 token_count 的"空"探测文件（缓存命中/未触发真实回合），
-    # 把真正带额度信息的快照挤出窗口。40 在 1 分钟探测节奏下扛不住，放宽到 300。
-    for p in files[:300]:
+    # --deep 是 widget 在最新记录只有额度拒绝时使用的本地回退路径。拒绝记录可能连续超过
+    # 任意固定上限（账号 2 曾连续产生 304 条），因此必须一直向后找最近的有效窗口。
+    # 普通模式仍会在第一条拒绝记录处立即返回，不会为日常读取扫描全部历史。
+    for p in files:
         try:
             size = os.path.getsize(p)
             with open(p, "rb") as f:

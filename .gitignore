@@ -6,3 +6,14 @@
 !/.gitignore
 !/codex-widget.py
 !/codex-usage.py
+
+# Antigravity & Keychain Token Vault (Private Credentials)
+account_vault/
+*.token
+*.token.*
+*_cache.json
+last_quota.json
+multi_quota_cache.json
+!/tools/
+!/tools/antigravity-quota-relay/
+!/tools/antigravity-quota-relay/**
