@@ -1,44 +1,61 @@
 # Antigravity Quota Relay & Multi-Account HUD ⚡
 
-A lightweight, zero-token desktop HUD and CLI hot-switcher for Google Antigravity.
+轻量级、0 Token 消耗的 Antigravity 多账号配额接力监控面板与秒级热切换工具。
 
-Designed for developers running multi-account setups to relay and rotate through daily/5-hour quota limits seamlessly without losing workspace context, active tasks, or conversation history.
-
----
-
-## ✨ Features
-
-- **0 Token Consumption**: Reads internal RPC quota metrics without sending LLM prompts.
-- **macOS Keychain Hot-Swapping**: Switches OAuth credentials in milliseconds without logging out or re-authenticating.
-- **Dual-Mode Floating HUD**:
-  - **Dense Matrix View**: Monitors multiple accounts simultaneously (Claude 5h/Weekly, Gemini 5h/Weekly, Argon).
-  - **Detailed Gauge View**: Single-click anywhere on the HUD to toggle full 5-bar progress gauge view.
-- **Model-Aware Dynamic Attachment**: Progress bars automatically attach to whichever model is actively being queried (`Claude`, `Gemini`, or `Argon`).
-- **Seamless Desktop App + CLI Handoff**: Auto-reloads Antigravity Desktop App while preserving all active panes, projects, and conversation state.
+专为拥有多个**基础版订阅（Standard / Pro，如 $19.99/月）**并希望**接力使用**以突破 5 小时并发/周期配额限制的开发者打造。无需花费 **5 倍高昂溢价（$99.99/月）** 升级 Ultra 套餐，通过多账号轮换即可实现算力永续不中断。
 
 ---
 
-## 🚀 Quick Start
+## 💡 为什么需要它？（核心痛点）
 
-### 1. Requirements
-- macOS (Sonoma, Sequoia, or later)
-- Python 3.9+ (Native `tkinter` included with system/Homebrew Python)
-- Antigravity CLI (`agy`) & Desktop App
+在日常开发、长流程 Agent 自动化（如自主重构、写单测、社媒矩阵互动）中，基础订阅账号的 **5 小时滚动配额（尤其是 Claude Opus 5.5 / Sonnet 5.5）** 非常容易触顶熔断。
 
-### 2. Launching the HUD
+- **官方升阶方案太贵**：Google AI Ultra（5x 配额套餐）售价高达 **$99.99/月**，是基础 Pro 订阅（$19.99/月）的整整 **5 倍价格**！
+- **多基础号接力更具性价比**：拥有 2~3 个基础订阅账号即可实现算力接力，不仅总成本远低于 Ultra，还能分摊封号与单点熔断风险。
+- **痛点难解**：过去多账号切换极其痛苦——每次都要退出重新扫码登录，而且会导致桌面端当前正在执行的任务上下文丢失。
+
+本工具通过 **macOS Keychain 热替换 + 进程无感唤醒**，实现了：
+👉 **任务和上下文 100% 保持，左侧聊天记录不丢，1 秒满血切号继续干活！**
+
+---
+
+## ✨ 核心特性
+
+- **0 Token 消耗**：直接抓取底层客户端内部 RPC 用量（`GetUserQuotaSummary`），不消耗任何 API 配额与费用。
+- **macOS Keychain 毫秒级热替换**：直接更新钥匙串 OAuth 凭证，告别反复扫码/重新授权。
+- **双模高质感 Cyber Dark HUD 悬浮窗**：
+  - **双号/多号矩阵视图**：同时监控 1号与 2号的 Claude (5h/周)、Gemini (5h/周)、Argon 限额，智能标出 `建议 X号`。
+  - **单号 5 项经典完整视图**：单击悬浮窗任意位置，瞬间在【矩阵对比】与【单号完整电量条】之间来回切换。
+- **动态模型感知进度条**：微型电量条自动吸附到当前正在活跃消耗的模型（Claude / Gemini / Argon）旁边，谁在干活一目了然。
+- **桌面端 + CLI 双端无缝接龙**：切号后自动重载桌面端，保留所有会话 Pane、历史项目，打字 `继续` 即可无缝接力。
+
+---
+
+## 🚀 快速上手
+
+### 1. 运行环境要求
+- macOS 系统（Sonoma / Sequoia 或更新版本）
+- Python 3.9+（自带标准库 `tkinter`，无需安装任何 pip 依赖）
+- Antigravity 官方 CLI (`agy`) 与 Desktop App
+
+### 2. 启动桌面监控 HUD
 ```bash
 python3 tools/antigravity-quota-relay/quota_relay_hud.py
 ```
+- 悬浮窗置顶显示，支持鼠标拖拽到屏幕任意角落。
+- 单击卡片或空白处即可切换【完整模式】与【矩阵模式】。
+- 点击底部 `[ 1号 ]` 或 `[ 2号 ✓ ]` 即可秒级切号。
 
-### 3. Switching Accounts via Command Line
+### 3. 命令行一键切号
+如果在纯终端下工作，可直接通过脚本切号：
 ```bash
-./tools/antigravity-quota-relay/agy-switch.sh 1   # Switch to Account 1
-./tools/antigravity-quota-relay/agy-switch.sh 2   # Switch to Account 2
+./tools/antigravity-quota-relay/agy-switch.sh 1   # 一键切到 1号
+./tools/antigravity-quota-relay/agy-switch.sh 2   # 一键切到 2号
 ```
 
 ---
 
-## 🔒 Security & Privacy
+## 🔒 安全与隐私承诺
 
-This project strictly stores credentials in `~/.gemini/account_vault/` and macOS Keychain. 
-All `.token` and `*_cache.json` files are excluded from Git version control. No telemetry or tokens are ever transmitted externally.
+- 本工具的所有凭证安全存放于本地系统钥匙串与 `~/.gemini/account_vault/`。
+- 仓库全局配置了严格的 `.gitignore`，**所有 `.token`、密钥及配额缓存均物理排除在版本控制之外**，任何时候 `git push` 都绝不会泄露任何个人凭据。
