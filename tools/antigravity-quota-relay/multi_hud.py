@@ -347,6 +347,8 @@ class MultiAccountHUD:
             btn.pack(side=tk.LEFT, padx=3, pady=6)
             btn.bind("<Button-1>", lambda e, s=slot: self.switch_to_slot(s))
 
+        self.root.after_idle(self.fit_height)
+
     def render_collapsed_matrix(self, slots):
         """紧凑折叠视图：每账号一行，超薄卡片，支持 5 个账号仅占微小屏幕"""
         for slot in slots:
@@ -739,6 +741,17 @@ class MultiAccountHUD:
     def on_done(self):
         self.is_fetching = False
         self.setup_ui()
+
+    def fit_height(self):
+        """按内容实际高度撑开窗口，避免账号变多时底部被截断"""
+        try:
+            self.root.update_idletasks()
+            h = self.root.winfo_reqheight()
+            w = self.root.winfo_width()
+            if h > 100 and abs(h - self.root.winfo_height()) > 2:
+                self.root.geometry(f"{w}x{h}")
+        except Exception:
+            pass
 
     def tick(self):
         for lbl, rtime in getattr(self, "time_labels", []):
