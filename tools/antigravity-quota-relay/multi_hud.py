@@ -30,6 +30,9 @@ COLOR_GREEN = "#10b981"
 COLOR_YELLOW = "#f59e0b"
 COLOR_RED = "#ef4444"
 COLOR_CYAN = "#06b6d4"
+COLOR_FULL = "#34d399"   # 满血（有 Argon 额度）
+COLOR_LITE = "#fb923c"   # 残血（无 Argon 额度）
+BORDER_LITE = "#5a3a1c"
 
 TEXT_PRIMARY = "#f8fafc"
 TEXT_SECONDARY = "#94a3b8"
@@ -365,7 +368,8 @@ class MultiAccountHUD:
             row.pack(fill=tk.X, pady=2)
             self.bind_drag(row)
 
-            l_slot = tk.Label(row, text=f"{slot}号", fg=COLOR_GREEN if is_active else TEXT_PRIMARY, bg=bg, font=("SF Mono", 9, "bold"))
+            tier = self.tier_of(data) if has_token else None
+            l_slot = tk.Label(row, text=f"{slot}号", fg=COLOR_LITE if tier == "lite" else (COLOR_GREEN if is_active else TEXT_PRIMARY), bg=bg, font=("SF Mono", 9, "bold"))
             l_slot.pack(side=tk.LEFT)
             self.bind_drag(l_slot)
 
@@ -392,14 +396,15 @@ class MultiAccountHUD:
             arg = data.get("argon_pct")
             arg_reset = data.get("argon_reset", "")
             arg_col = self.get_color(arg)
-            tk.Label(row, text="Arg:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            tk.Label(row, text="  --" if arg is None else f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            if arg is not None:
+                tk.Label(row, text="Arg:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text=f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 倒计时
-            t_cnt = tk.Label(row, text="--" if arg is None else self.format_countdown(arg_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
-            t_cnt.pack(side=tk.RIGHT)
-            self.bind_drag(t_cnt)
             if arg is not None:
+                t_cnt = tk.Label(row, text=self.format_countdown(arg_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t_cnt.pack(side=tk.RIGHT)
+                self.bind_drag(t_cnt)
                 self.time_labels.append((t_cnt, arg_reset))
 
     def render_expanded_cards(self, slots):
@@ -414,6 +419,9 @@ class MultiAccountHUD:
             bg = CARD_ACTIVE_BG if is_active else CARD_BG
             border = BORDER_ACTIVE if is_active else BORDER_INACTIVE
             
+            tier = self.tier_of(data) if has_token else None
+            if tier == "lite" and not is_active:
+                border = BORDER_LITE
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=10, pady=4)
             card.pack(fill=tk.X, pady=3)
             self.bind_drag(card)
@@ -423,9 +431,14 @@ class MultiAccountHUD:
             header_row.pack(fill=tk.X, pady=(0, 2))
             self.bind_drag(header_row)
 
-            l_slot = tk.Label(header_row, text=f"{slot}号", fg=TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
+            l_slot = tk.Label(header_row, text=f"{slot}号", fg=COLOR_LITE if tier == "lite" else TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
             l_slot.pack(side=tk.LEFT)
             self.bind_drag(l_slot)
+            if tier:
+                l_tier = tk.Label(header_row, text="满血" if tier == "full" else "残血",
+                                  fg=COLOR_FULL if tier == "full" else COLOR_LITE, bg=bg, font=("SF Pro Text", 8, "bold"))
+                l_tier.pack(side=tk.LEFT, padx=(4, 0))
+                self.bind_drag(l_tier)
 
             if not has_token:
                 btn_bind = tk.Label(
@@ -523,22 +536,29 @@ class MultiAccountHUD:
             self.time_labels.append((t_gwk, gwk_reset))
 
             # 4. Argon
-            arg_row = tk.Frame(card, bg=bg, pady=1)
-            arg_row.pack(fill=tk.X)
-            self.bind_drag(arg_row)
+            if argon_pct is not None:  # 不支持 Argon 的账号不显示该行
+                arg_row = tk.Frame(card, bg=bg, pady=1)
+                arg_row.pack(fill=tk.X)
+                self.bind_drag(arg_row)
 
-            arg_col = self.get_color(argon_pct)
-            arg_txt = "不支持" if argon_pct is None else f"{argon_pct:5.1f}%"
-            tk.Label(arg_row, text="Argon", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
+                arg_col = self.get_color(argon_pct)
+                arg_txt = "不支持" if argon_pct is None else f"{argon_pct:5.1f}%"
+                tk.Label(arg_row, text="Argon", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
 
-            tk.Label(arg_row, text="复位:", fg=TEXT_MUTED, bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
-            t_arg_txt = "--" if argon_pct is None else self.format_countdown(argon_reset)
-            t_arg = tk.Label(arg_row, text=t_arg_txt, fg=COLOR_CYAN if (argon_pct and argon_pct < 20) else TEXT_MUTED, bg=bg, font=("SF Mono", 8, "bold"))
-            t_arg.pack(side=tk.LEFT, padx=(2, 0))
-            self.bind_drag(t_arg)
-            if argon_pct is not None:
-                self.time_labels.append((t_arg, argon_reset))
+                tk.Label(arg_row, text="复位:", fg=TEXT_MUTED, bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
+                t_arg_txt = "--" if argon_pct is None else self.format_countdown(argon_reset)
+                t_arg = tk.Label(arg_row, text=t_arg_txt, fg=COLOR_CYAN if (argon_pct and argon_pct < 20) else TEXT_MUTED, bg=bg, font=("SF Mono", 8, "bold"))
+                t_arg.pack(side=tk.LEFT, padx=(2, 0))
+                self.bind_drag(t_arg)
+                if argon_pct is not None:
+                    self.time_labels.append((t_arg, argon_reset))
+
+    def tier_of(self, data):
+        """满血=有 Argon 额度；残血=没有；尚无数据返回 None"""
+        if not data:
+            return None
+        return "full" if data.get("argon_pct") is not None else "lite"
 
     def get_color(self, pct):
         if pct is None:
