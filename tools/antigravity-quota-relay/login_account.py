@@ -219,7 +219,7 @@ if not token_to_save:
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL
+                stdin=subprocess.PIPE
             )
 
             # 等待拦截器截获 Google 官方授权 URL
@@ -255,7 +255,7 @@ if not token_to_save:
                 print("👉 在浏览器点击账号完成授权后，本终端将自动接收凭证（无需手动复制 Token）...", flush=True)
 
             if choice == "2":
-                print("💡 授权后若页面打不开/无反应：把浏览器最终页面地址栏里的整条网址（含 code=）复制，粘贴到这里按回车即可。", flush=True)
+                print("💡 浏览器授权后会显示一串 code（4/0A 开头）：复制它，粘贴到这里按回车即可。", flush=True)
                 wait_secs = 600
             else:
                 wait_secs = 120
@@ -264,6 +264,13 @@ if not token_to_save:
             def relay_callback(url):
                 """把用户粘回来的回调网址（或 code）转交给本机 agy 的接收端口"""
                 url = url.strip()
+                if url.startswith("4/") and "://" not in url:
+                    try:
+                        proc.stdin.write((url + "\n").encode()); proc.stdin.flush()
+                        print("✅ 已把 code 交给 agy，正在接收凭证...", flush=True)
+                        return
+                    except Exception as e:
+                        print(f"⚠️ 写入 agy 失败：{e}", flush=True)
                 if "://" not in url and "code=" not in url:
                     url = "https://antigravity.google/oauth-callback?code=" + urllib.parse.quote(url)
                 u = urllib.parse.urlparse(url)
