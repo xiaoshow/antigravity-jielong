@@ -404,9 +404,13 @@ class MultiAccountHUD:
 
             # 简写 G-5h
             g5 = data.get("g5h_pct")
-            g5_col = self.get_color(g5)
-            tk.Label(row, text="G:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            tk.Label(row, text="  --" if g5 is None else f"{g5:4.0f}%", fg=g5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            if g5 is not None:
+                tk.Label(row, text="G:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text=f"{g5:4.0f}%", fg=self.get_color(g5), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            else:   # 没有 5 小时额度（Free）：折叠行显示周额度
+                gw = data.get("gwk_pct")
+                tk.Label(row, text="G周:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text="  --" if gw is None else f"{gw:4.0f}%", fg=self.get_color(gw), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 Argon
             arg = data.get("argon_pct")
@@ -534,17 +538,18 @@ class MultiAccountHUD:
             g_row.pack(fill=tk.X)
             self.bind_drag(g_row)
 
-            g5h_col = self.get_color(g5h_pct)
-            g5h_txt = "  --  " if g5h_pct is None else f"{g5h_pct:5.1f}%"
-            tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+            if g5h_pct is not None:  # 没有 5 小时额度的账号（Free）不显示 G-5h
+                g5h_col = self.get_color(g5h_pct)
+                g5h_txt = f"{g5h_pct:5.1f}%"
+                tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
 
-            t_g5_txt = "--" if not g5h_reset else self.format_countdown(g5h_reset)
-            t_g5 = tk.Label(g_row, text=t_g5_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
-            t_g5.pack(side=tk.LEFT, padx=(0, 10))
-            self.bind_drag(t_g5)
-            if g5h_reset:
-                self.time_labels.append((t_g5, g5h_reset))
+                t_g5_txt = "--" if not g5h_reset else self.format_countdown(g5h_reset)
+                t_g5 = tk.Label(g_row, text=t_g5_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t_g5.pack(side=tk.LEFT, padx=(0, 10))
+                self.bind_drag(t_g5)
+                if g5h_reset:
+                    self.time_labels.append((t_g5, g5h_reset))
 
             gwk_col = self.get_color(gwk_pct)
             gwk_txt = "  --  " if gwk_pct is None else f"{gwk_pct:5.1f}%"
