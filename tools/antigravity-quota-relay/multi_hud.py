@@ -641,6 +641,12 @@ class MultiAccountHUD:
     def trigger_refresh(self):
         if self.is_fetching or self.is_binding or self.switching_slot or os.path.exists(LOCK_FILE):
             return
+        # 账号槽位增减（例如在终端里新绑定了账号）时自动重建界面，无需重启
+        sig = tuple(os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) for n in "12345")
+        if getattr(self, "_tok_sig", sig) != sig:
+            self.account_emails = self.load_emails()
+            self.root.after(0, self.setup_ui)
+        self._tok_sig = sig
         self.is_fetching = True
 
         def worker():
