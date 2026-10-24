@@ -255,23 +255,42 @@ if not token_to_save:
                 print("👉 在浏览器点击账号完成授权后，本终端将自动接收凭证（无需手动复制 Token）...", flush=True)
 
             if choice == "2":
-                print("💡 授权后若页面打不开/无反应：把浏览器地址栏里以 http://localhost 或 http://127.0.0.1 开头的整条网址复制，粘贴到这里按回车即可。", flush=True)
+                print("💡 授权后若页面打不开/无反应：把浏览器最终页面地址栏里的整条网址（含 code=）复制，粘贴到这里按回车即可。", flush=True)
                 wait_secs = 600
             else:
                 wait_secs = 120
             print(f"⏳ 等待浏览器授权回调中（最长 {wait_secs} 秒）...", flush=True)
 
             def relay_callback(url):
-                """把用户粘回来的回调网址由本机转交给 agy 的本地接收端口"""
+                """把用户粘回来的回调网址（或 code）转交给本机 agy 的接收端口"""
+                url = url.strip()
+                if "://" not in url and "code=" not in url:
+                    url = "https://antigravity.google/oauth-callback?code=" + urllib.parse.quote(url)
                 u = urllib.parse.urlparse(url)
-                if u.scheme != "http" or u.hostname not in ("localhost", "127.0.0.1") or "code=" not in u.query:
-                    print("⚠️ 这不是授权回调网址（需以 http://localhost 开头且含 code=），已忽略。", flush=True)
+                query = u.query or urllib.parse.urlparse(url.replace("#", "?")).query
+                if "code=" not in query:
+                    print("⚠️ 没找到授权码（需含 code=），已忽略。请粘贴浏览器地址栏的完整网址。", flush=True)
                     return
-                try:
-                    urllib.request.urlopen(url, timeout=10).read()
-                    print("✅ 已提交授权，正在接收凭证...", flush=True)
-                except Exception as e:
-                    print(f"⚠️ 提交失败：{e}（授权可能已过期，请重新运行）", flush=True)
+                if u.hostname in ("localhost", "127.0.0.1"):
+                    targets = [url.replace("localhost", "127.0.0.1")]
+                else:
+                    # antigravity.google/oauth-callback 等网页地址：改投 agy 进程本机监听的端口
+                    out = subprocess.run(["lsof", "-nP", "-a", "-p", str(proc.pid), "-iTCP", "-sTCP:LISTEN"],
+                                         capture_output=True, text=True).stdout
+                    ports = sorted({l.split(":")[-1].split()[0] for l in out.splitlines() if "LISTEN" in l})
+                    targets = [f"http://127.0.0.1:{pt}{path}?{query}" for pt in ports
+                               for path in ("/oauth-callback", "/oauth2callback", "/callback", "/")]
+                    if not ports:
+                        print("⚠️ 找不到本机接收端口（agy 可能已退出），请重新运行绑定。", flush=True)
+                        return
+                for t in targets:
+                    try:
+                        urllib.request.urlopen(t, timeout=5).read()
+                        print("✅ 已提交授权，正在接收凭证...", flush=True)
+                        return
+                    except Exception:
+                        continue
+                print("⚠️ 提交失败（授权可能已过期），请重新运行绑定。", flush=True)
 
             # 轮询获取新 Token
             import select

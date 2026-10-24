@@ -593,7 +593,7 @@ class MultiAccountHUD:
         def worker():
             try:
                 with self.keychain_lock:
-                    script_path = os.path.join(VAULT_DIR, "login_account.py")
+                    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login_account.py")
                     subprocess.run(["python3", script_path, str(slot)], check=False)
                     self.account_emails = self.load_emails()
                     self.active_slot = slot
