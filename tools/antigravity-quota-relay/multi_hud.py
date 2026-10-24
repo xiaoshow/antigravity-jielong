@@ -14,6 +14,7 @@ import tkinter as tk
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
 CACHE_FILE = os.path.expanduser("~/.gemini/account_vault/multi_quota_cache.json")
 CLI_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
+CLI_TOKEN_FILE = os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token")
 STANDALONE_TOKEN_FILE = os.path.expanduser("~/.gemini/jetski-standalone-oauth-token")
 APP_STORAGE = os.path.expanduser("~/Library/Application Support/Antigravity/app_storage.json")
 LOCK_FILE = os.path.join(VAULT_DIR, ".login_lock")
@@ -30,9 +31,11 @@ COLOR_GREEN = "#10b981"
 COLOR_YELLOW = "#f59e0b"
 COLOR_RED = "#ef4444"
 COLOR_CYAN = "#06b6d4"
-COLOR_FULL = "#34d399"   # 满血（有 Argon 额度）
-COLOR_LITE = "#fb923c"   # 残血（无 Argon 额度）
+COLOR_FULL = "#34d399"   # Pro（有 Argon 额度）
+COLOR_LITE = "#fb923c"   # Free（无 Argon、无 5h 额度）
 BORDER_LITE = "#5a3a1c"
+COLOR_PLUS = "#38bdf8"   # Plus（无 Argon，但 Gemini 有 5h 额度）
+BORDER_PLUS = "#1c3d5a"
 
 TEXT_PRIMARY = "#f8fafc"
 TEXT_SECONDARY = "#94a3b8"
@@ -173,6 +176,8 @@ class MultiAccountHUD:
             decoded_json = base64.b64decode(b64_part).decode("utf-8")
             with open(STANDALONE_TOKEN_FILE, "w", encoding="utf-8") as sf:
                 sf.write(decoded_json)
+            with open(CLI_TOKEN_FILE, "w", encoding="utf-8") as cf:
+                cf.write(decoded_json)
         except Exception:
             pass
 
@@ -289,10 +294,20 @@ class MultiAccountHUD:
         cur_c5 = cur_d.get("c5h_pct", 100.0)
         is_cur_dead = (cur_cwk <= 0.01 or cur_d.get("c5h_reset") == "DISABLED")
 
+        cur_tier = self.tier_of(cur_d)
         if self.switching_slot:
             rec_text = f" · 正在切换至 {self.active_slot}号..."
         elif self.is_binding:
             rec_text = " · 正在浏览器授权..."
+        elif cur_tier == "lite":
+            cur_g5 = cur_d.get("g5h_pct")
+            cur_gwk = cur_d.get("gwk_pct", 100.0)
+            if cur_gwk <= 0.01:
+                rec_text = " · 配额耗尽"
+            elif cur_g5 is not None and cur_g5 < 15:
+                rec_text = " · 配额紧张"
+            else:
+                rec_text = " · 状态极佳"
         elif is_cur_dead:
             rec_text = f" · 建议切{best_slot}号!" if best_slot and best_slot != self.active_slot else " · Claude已耗尽"
         elif best_slot and best_slot != self.active_slot and (self.account_data.get(best_slot, {}).get("c5h_pct", 0) > cur_c5 + 30):
@@ -379,12 +394,13 @@ class MultiAccountHUD:
                 btn_b.bind("<Button-1>", lambda e, s=slot: self.bind_new_slot(s))
                 continue
 
-            # 简写 C-5h
-            c5 = data.get("c5h_pct")
-            c5_col = self.get_color(c5)
-            tk.Label(row, text="C:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else ("  --" if c5 is None else f"{c5:4.0f}%")
-            tk.Label(row, text=c5_text, fg=c5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            # 简写 C-5h（仅满血账号显示）
+            if tier != "lite":
+                c5 = data.get("c5h_pct")
+                c5_col = self.get_color(c5)
+                tk.Label(row, text="C:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else ("  --" if c5 is None else f"{c5:4.0f}%")
+                tk.Label(row, text=c5_text, fg=c5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 G-5h
             g5 = data.get("g5h_pct")
@@ -400,12 +416,13 @@ class MultiAccountHUD:
                 tk.Label(row, text="Arg:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
                 tk.Label(row, text=f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
-            # 倒计时
-            if arg is not None:
-                t_cnt = tk.Label(row, text=self.format_countdown(arg_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            # 倒计时: 有 Argon 优先显示 Argon 倒计时；无 Argon 显示 G-Wk / C-Wk 周倒计时
+            main_reset = arg_reset or data.get("gwk_reset") or data.get("cwk_reset")
+            if main_reset:
+                t_cnt = tk.Label(row, text=self.format_countdown(main_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
                 t_cnt.pack(side=tk.RIGHT)
                 self.bind_drag(t_cnt)
-                self.time_labels.append((t_cnt, arg_reset))
+                self.time_labels.append((t_cnt, main_reset))
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
@@ -421,7 +438,7 @@ class MultiAccountHUD:
             
             tier = self.tier_of(data) if has_token else None
             if tier == "lite" and not is_active:
-                border = BORDER_LITE
+                border = BORDER_PLUS if self.tier_name(data) == "Plus" else BORDER_LITE
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=10, pady=4)
             card.pack(fill=tk.X, pady=3)
             self.bind_drag(card)
@@ -431,12 +448,13 @@ class MultiAccountHUD:
             header_row.pack(fill=tk.X, pady=(0, 2))
             self.bind_drag(header_row)
 
-            l_slot = tk.Label(header_row, text=f"{slot}号", fg=COLOR_LITE if tier == "lite" else TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
+            l_slot = tk.Label(header_row, text=f"{slot}号", fg=(COLOR_PLUS if self.tier_name(data) == "Plus" else COLOR_LITE) if tier == "lite" else TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
             l_slot.pack(side=tk.LEFT)
             self.bind_drag(l_slot)
             if tier:
-                l_tier = tk.Label(header_row, text="满血" if tier == "full" else "残血",
-                                  fg=COLOR_FULL if tier == "full" else COLOR_LITE, bg=bg, font=("SF Pro Text", 8, "bold"))
+                tname = self.tier_name(data)
+                l_tier = tk.Label(header_row, text=tname,
+                                  fg={"Pro": COLOR_FULL, "Plus": COLOR_PLUS}.get(tname, COLOR_LITE), bg=bg, font=("SF Pro Text", 8, "bold"))
                 l_tier.pack(side=tk.LEFT, padx=(4, 0))
                 self.bind_drag(l_tier)
 
@@ -477,39 +495,41 @@ class MultiAccountHUD:
             argon_pct = data.get("argon_pct")
             argon_reset = data.get("argon_reset", "")
 
-            # 2. Claude 行
-            c_row = tk.Frame(card, bg=bg, pady=1)
-            c_row.pack(fill=tk.X)
-            self.bind_drag(c_row)
+            # 2. Claude 行（仅满血账号显示，残血账号隐藏）
+            if tier != "lite" and (cwk_pct is not None or c5h_pct is not None):
+                c_row = tk.Frame(card, bg=bg, pady=1)
+                c_row.pack(fill=tk.X)
+                self.bind_drag(c_row)
 
-            c5h_col = self.get_color(c5h_pct)
-            c5h_txt = "  --  " if c5h_pct is None else f"{c5h_pct:5.1f}%"
-            tk.Label(c_row, text="C-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            
-            t1_txt = "--" if c5h_pct is None else self.format_countdown(c5h_reset)
-            t1 = tk.Label(c_row, text=t1_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
-            t1.pack(side=tk.LEFT, padx=(0, 10))
-            self.bind_drag(t1)
-            if c5h_pct is not None:
-                self.time_labels.append((t1, c5h_reset))
+                if c5h_pct is not None:
+                    c5h_col = self.get_color(c5h_pct)
+                    c5h_txt = f"{c5h_pct:5.1f}%"
+                    tk.Label(c_row, text="C-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                    tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+                    
+                    t1_txt = self.format_countdown(c5h_reset)
+                    t1 = tk.Label(c_row, text=t1_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                    t1.pack(side=tk.LEFT, padx=(0, 10))
+                    self.bind_drag(t1)
+                    if c5h_reset:
+                        self.time_labels.append((t1, c5h_reset))
 
-            cwk_col = self.get_color(cwk_pct)
-            if cwk_pct is None or (cwk_pct == 0.0 and c5h_pct is None):
-                cwk_txt = "未开通"
-                cwk_col = TEXT_MUTED
-            else:
-                cwk_txt = f"{cwk_pct:5.1f}%"
-            tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            t2_txt = "--" if (cwk_pct is None or (cwk_pct == 0.0 and c5h_pct is None)) else self.format_countdown(cwk_reset)
-            t2 = tk.Label(c_row, text=t2_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
-            t2.pack(side=tk.LEFT)
-            self.bind_drag(t2)
-            if cwk_pct is not None:
-                self.time_labels.append((t2, cwk_reset))
+                cwk_col = self.get_color(cwk_pct)
+                if cwk_pct is None:
+                    cwk_txt = "未开通"
+                    cwk_col = TEXT_MUTED
+                else:
+                    cwk_txt = f"{cwk_pct:5.1f}%"
+                tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+                t2_txt = "--" if not cwk_reset else self.format_countdown(cwk_reset)
+                t2 = tk.Label(c_row, text=t2_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t2.pack(side=tk.LEFT)
+                self.bind_drag(t2)
+                if cwk_reset:
+                    self.time_labels.append((t2, cwk_reset))
 
-            # 3. Gemini 行
+            # 3. Gemini 行（残血账号仅保留此行：G-5h 与 G-Wk，2号和4号结构完全一致）
             g_row = tk.Frame(card, bg=bg, pady=1)
             g_row.pack(fill=tk.X)
             self.bind_drag(g_row)
@@ -519,11 +539,11 @@ class MultiAccountHUD:
             tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
             tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
 
-            t_g5_txt = "--" if g5h_pct is None else self.format_countdown(g5h_reset)
+            t_g5_txt = "--" if not g5h_reset else self.format_countdown(g5h_reset)
             t_g5 = tk.Label(g_row, text=t_g5_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t_g5.pack(side=tk.LEFT, padx=(0, 10))
             self.bind_drag(t_g5)
-            if g5h_pct is not None:
+            if g5h_reset:
                 self.time_labels.append((t_g5, g5h_reset))
 
             gwk_col = self.get_color(gwk_pct)
@@ -553,6 +573,14 @@ class MultiAccountHUD:
                 self.bind_drag(t_arg)
                 if argon_pct is not None:
                     self.time_labels.append((t_arg, argon_reset))
+
+    def tier_name(self, data):
+        """Pro=有 Argon（1/3号）；Plus=无 Argon 但 Gemini 有 5h 复位（4号）；Free=只有 Gemini 周额度（2号）；无数据返回 None"""
+        if not data:
+            return None
+        if data.get("argon_pct") is not None:
+            return "Pro"
+        return "Plus" if data.get("g5h_pct") is not None else "Free"
 
     def tier_of(self, data):
         """满血=有 Argon 额度；残血=没有；尚无数据返回 None"""
@@ -687,6 +715,17 @@ class MultiAccountHUD:
                                 slot_token = tf.read().strip()
                             if not slot_token:
                                 continue
+
+                            # 同步更新 standalone 与 cli token，确保 agy 真实拉取该槽位
+                            try:
+                                raw_tok = slot_token.replace("go-keyring-base64:", "")
+                                dec_tok = base64.b64decode(raw_tok).decode("utf-8")
+                                with open(STANDALONE_TOKEN_FILE, "w", encoding="utf-8") as sf:
+                                    sf.write(dec_tok)
+                                with open(CLI_TOKEN_FILE, "w", encoding="utf-8") as cf:
+                                    cf.write(dec_tok)
+                            except Exception:
+                                pass
 
                             subprocess.run(
                                 ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
