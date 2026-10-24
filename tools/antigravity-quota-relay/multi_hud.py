@@ -16,6 +16,7 @@ CACHE_FILE = os.path.expanduser("~/.gemini/account_vault/multi_quota_cache.json"
 CLI_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
 STANDALONE_TOKEN_FILE = os.path.expanduser("~/.gemini/jetski-standalone-oauth-token")
 APP_STORAGE = os.path.expanduser("~/Library/Application Support/Antigravity/app_storage.json")
+LOCK_FILE = os.path.join(VAULT_DIR, ".login_lock")
 os.makedirs(VAULT_DIR, exist_ok=True)
 
 BG_COLOR = "#0c0e12"
@@ -149,6 +150,8 @@ class MultiAccountHUD:
         return emails
 
     def apply_slot_credentials(self, slot):
+        if os.path.exists(LOCK_FILE):
+            return False
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
         if not os.path.exists(tpath):
             return False
@@ -219,6 +222,8 @@ class MultiAccountHUD:
         widget.bind("<ButtonRelease-1>", self.on_release)
 
     def detect_current_slot(self):
+        if os.path.exists(LOCK_FILE):
+            return self.active_slot or "1"
         try:
             cmd = ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]
             cur = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
@@ -369,30 +374,31 @@ class MultiAccountHUD:
                 continue
 
             # 简写 C-5h
-            c5 = data.get("c5h_pct", 0.0)
+            c5 = data.get("c5h_pct")
             c5_col = self.get_color(c5)
             tk.Label(row, text="C:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else f"{c5:4.0f}%"
+            c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else ("  --" if c5 is None else f"{c5:4.0f}%")
             tk.Label(row, text=c5_text, fg=c5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 G-5h
-            g5 = data.get("g5h_pct", 0.0)
+            g5 = data.get("g5h_pct")
             g5_col = self.get_color(g5)
             tk.Label(row, text="G:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            tk.Label(row, text=f"{g5:4.0f}%", fg=g5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(row, text="  --" if g5 is None else f"{g5:4.0f}%", fg=g5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 Argon
-            arg = data.get("argon_pct", 0.0)
+            arg = data.get("argon_pct")
             arg_reset = data.get("argon_reset", "")
             arg_col = self.get_color(arg)
             tk.Label(row, text="Arg:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-            tk.Label(row, text=f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(row, text="  --" if arg is None else f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 倒计时
-            t_cnt = tk.Label(row, text=self.format_countdown(arg_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            t_cnt = tk.Label(row, text="--" if arg is None else self.format_countdown(arg_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t_cnt.pack(side=tk.RIGHT)
             self.bind_drag(t_cnt)
-            self.time_labels.append((t_cnt, arg_reset))
+            if arg is not None:
+                self.time_labels.append((t_cnt, arg_reset))
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
@@ -443,17 +449,17 @@ class MultiAccountHUD:
                 badge.pack(side=tk.RIGHT)
                 self.bind_drag(badge)
 
-            c5h_pct = data.get("c5h_pct", 0.0)
+            c5h_pct = data.get("c5h_pct")
             c5h_reset = data.get("c5h_reset", "")
-            cwk_pct = data.get("cwk_pct", 0.0)
+            cwk_pct = data.get("cwk_pct")
             cwk_reset = data.get("cwk_reset", "")
             
-            g5h_pct = data.get("g5h_pct", 0.0)
+            g5h_pct = data.get("g5h_pct")
             g5h_reset = data.get("g5h_reset", "")
-            gwk_pct = data.get("gwk_pct", 0.0)
+            gwk_pct = data.get("gwk_pct")
             gwk_reset = data.get("gwk_reset", "")
             
-            argon_pct = data.get("argon_pct", 0.0)
+            argon_pct = data.get("argon_pct")
             argon_reset = data.get("argon_reset", "")
 
             # 2. Claude 行
@@ -461,45 +467,54 @@ class MultiAccountHUD:
             c_row.pack(fill=tk.X)
             self.bind_drag(c_row)
 
-            is_c_active = (self.active_model_group == "claude")
             c5h_col = self.get_color(c5h_pct)
-            c_tag_col = COLOR_CYAN if is_c_active else TEXT_SECONDARY
+            c5h_txt = "  --  " if c5h_pct is None else f"{c5h_pct:5.1f}%"
+            tk.Label(c_row, text="C-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
             
-            tk.Label(c_row, text="C-5h", fg=c_tag_col, bg=bg, font=("SF Mono", 8, "bold" if is_c_active else "normal")).pack(side=tk.LEFT)
-            tk.Label(c_row, text=f"{c5h_pct:5.1f}%", fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            
-            t1 = tk.Label(c_row, text=self.format_countdown(c5h_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            t1_txt = "--" if c5h_pct is None else self.format_countdown(c5h_reset)
+            t1 = tk.Label(c_row, text=t1_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t1.pack(side=tk.LEFT, padx=(0, 10))
             self.bind_drag(t1)
-            self.time_labels.append((t1, c5h_reset))
+            if c5h_pct is not None:
+                self.time_labels.append((t1, c5h_reset))
 
             cwk_col = self.get_color(cwk_pct)
-            tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT)
-            tk.Label(c_row, text=f"{cwk_pct:5.1f}%", fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            t2 = tk.Label(c_row, text=self.format_countdown(cwk_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            if cwk_pct is None or (cwk_pct == 0.0 and c5h_pct is None):
+                cwk_txt = "未开通"
+                cwk_col = TEXT_MUTED
+            else:
+                cwk_txt = f"{cwk_pct:5.1f}%"
+            tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+            t2_txt = "--" if (cwk_pct is None or (cwk_pct == 0.0 and c5h_pct is None)) else self.format_countdown(cwk_reset)
+            t2 = tk.Label(c_row, text=t2_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t2.pack(side=tk.LEFT)
             self.bind_drag(t2)
-            self.time_labels.append((t2, cwk_reset))
+            if cwk_pct is not None:
+                self.time_labels.append((t2, cwk_reset))
 
             # 3. Gemini 行
             g_row = tk.Frame(card, bg=bg, pady=1)
             g_row.pack(fill=tk.X)
             self.bind_drag(g_row)
 
-            is_g_active = (self.active_model_group == "gemini")
             g5h_col = self.get_color(g5h_pct)
-            g_tag_col = COLOR_CYAN if is_g_active else TEXT_SECONDARY
-            tk.Label(g_row, text="G-5h", fg=g_tag_col, bg=bg, font=("SF Mono", 8, "bold" if is_g_active else "normal")).pack(side=tk.LEFT)
-            tk.Label(g_row, text=f"{g5h_pct:5.1f}%", fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+            g5h_txt = "  --  " if g5h_pct is None else f"{g5h_pct:5.1f}%"
+            tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
 
-            t_g5 = tk.Label(g_row, text=self.format_countdown(g5h_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            t_g5_txt = "--" if g5h_pct is None else self.format_countdown(g5h_reset)
+            t_g5 = tk.Label(g_row, text=t_g5_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t_g5.pack(side=tk.LEFT, padx=(0, 10))
             self.bind_drag(t_g5)
-            self.time_labels.append((t_g5, g5h_reset))
+            if g5h_pct is not None:
+                self.time_labels.append((t_g5, g5h_reset))
 
             gwk_col = self.get_color(gwk_pct)
-            tk.Label(g_row, text="G-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT)
-            tk.Label(g_row, text=f"{gwk_pct:5.1f}%", fg=gwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
+            gwk_txt = "  --  " if gwk_pct is None else f"{gwk_pct:5.1f}%"
+            tk.Label(g_row, text="G-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(g_row, text=gwk_txt, fg=gwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
             t_gwk = tk.Label(g_row, text=self.format_countdown(gwk_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
             t_gwk.pack(side=tk.LEFT)
             self.bind_drag(t_gwk)
@@ -510,25 +525,22 @@ class MultiAccountHUD:
             arg_row.pack(fill=tk.X)
             self.bind_drag(arg_row)
 
-            is_a_active = (self.active_model_group == "argon")
             arg_col = self.get_color(argon_pct)
-            a_tag_col = COLOR_CYAN if is_a_active else TEXT_SECONDARY
-            tk.Label(arg_row, text="Argon", fg=a_tag_col, bg=bg, font=("SF Mono", 8, "bold" if is_a_active else "normal")).pack(side=tk.LEFT)
-            tk.Label(arg_row, text=f"{argon_pct:5.1f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 6))
-
-            cv_a = tk.Canvas(arg_row, bg=TRACK_COLOR, width=54, height=4, highlightthickness=0)
-            cv_a.pack(side=tk.LEFT, padx=(0, 8))
-            w_a = max(0, min(54, int(54 * (argon_pct / 100.0))))
-            if w_a > 0: cv_a.create_rectangle(0, 0, w_a, 4, fill=arg_col, width=0)
-            self.bind_drag(cv_a)
+            arg_txt = "不支持" if argon_pct is None else f"{argon_pct:5.1f}%"
+            tk.Label(arg_row, text="Argon", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
 
             tk.Label(arg_row, text="复位:", fg=TEXT_MUTED, bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
-            t_arg = tk.Label(arg_row, text=self.format_countdown(argon_reset), fg=COLOR_CYAN if argon_pct < 20 else TEXT_MUTED, bg=bg, font=("SF Mono", 8, "bold"))
+            t_arg_txt = "--" if argon_pct is None else self.format_countdown(argon_reset)
+            t_arg = tk.Label(arg_row, text=t_arg_txt, fg=COLOR_CYAN if (argon_pct and argon_pct < 20) else TEXT_MUTED, bg=bg, font=("SF Mono", 8, "bold"))
             t_arg.pack(side=tk.LEFT, padx=(2, 0))
             self.bind_drag(t_arg)
-            self.time_labels.append((t_arg, argon_reset))
+            if argon_pct is not None:
+                self.time_labels.append((t_arg, argon_reset))
 
     def get_color(self, pct):
+        if pct is None:
+            return TEXT_MUTED
         if pct < 15:
             return COLOR_RED
         if pct < 45:
@@ -564,8 +576,8 @@ class MultiAccountHUD:
             if not os.path.exists(tpath):
                 continue
             d = self.account_data.get(slot, {})
-            cwk = d.get("cwk_pct", 0.0)
-            c5 = d.get("c5h_pct", 0.0)
+            cwk = d.get("cwk_pct") or 0.0
+            c5 = d.get("c5h_pct") or 0.0
             score = -100.0 if (cwk <= 0.01 or d.get("c5h_reset") == "DISABLED") else c5
             if score > best_score:
                 best_score = score
@@ -627,14 +639,14 @@ class MultiAccountHUD:
         threading.Thread(target=reload_app, daemon=True).start()
 
     def trigger_refresh(self):
-        if self.is_fetching or self.is_binding or self.switching_slot:
+        if self.is_fetching or self.is_binding or self.switching_slot or os.path.exists(LOCK_FILE):
             return
         self.is_fetching = True
 
         def worker():
             try:
                 for s in ["1", "2", "3", "4", "5"]:
-                    if self.switching_slot:
+                    if self.switching_slot or os.path.exists(LOCK_FILE):
                         break
                     tok_path = os.path.join(VAULT_DIR, f"acc{s}.token")
                     if not os.path.exists(tok_path):
@@ -657,8 +669,19 @@ class MultiAccountHUD:
                             if res.returncode == 0:
                                 d = json.loads(res.stdout)
                                 groups = d.get("command", {}).get("data", {}).get("groups", [])
-                                if s not in self.account_data:
-                                    self.account_data[s] = {}
+                                # 每次拉取前重置槽位数据，避免不同套餐账号残留脏缓存
+                                slot_dict = {
+                                    "c5h_pct": None,
+                                    "c5h_reset": "",
+                                    "cwk_pct": None,
+                                    "cwk_reset": "",
+                                    "g5h_pct": None,
+                                    "g5h_reset": "",
+                                    "gwk_pct": None,
+                                    "gwk_reset": "",
+                                    "argon_pct": None,
+                                    "argon_reset": ""
+                                }
 
                                 for g in groups:
                                     gname = g.get("name", "").lower()
@@ -669,30 +692,32 @@ class MultiAccountHUD:
                                         rtime = b.get("reset_time", "")
                                         
                                         if "argon" in bid or "argon" in gname:
-                                            self.account_data[s]["argon_pct"] = frac
-                                            self.account_data[s]["argon_reset"] = rtime
+                                            slot_dict["argon_pct"] = frac
+                                            slot_dict["argon_reset"] = rtime
                                         elif "3p" in bid or "claude" in gname:
                                             if "5h" in bid or "five" in bid:
                                                 if disabled:
-                                                    self.account_data[s]["c5h_pct"] = 0.0
-                                                    self.account_data[s]["c5h_reset"] = "DISABLED"
+                                                    slot_dict["c5h_pct"] = 0.0
+                                                    slot_dict["c5h_reset"] = "DISABLED"
                                                 else:
-                                                    self.account_data[s]["c5h_pct"] = frac
-                                                    self.account_data[s]["c5h_reset"] = rtime
+                                                    slot_dict["c5h_pct"] = frac
+                                                    slot_dict["c5h_reset"] = rtime
                                             else:
-                                                self.account_data[s]["cwk_pct"] = frac
-                                                self.account_data[s]["cwk_reset"] = rtime
+                                                slot_dict["cwk_pct"] = frac
+                                                slot_dict["cwk_reset"] = rtime
                                         elif "gemini" in gname:
                                             if "5h" in bid or "five" in bid:
-                                                self.account_data[s]["g5h_pct"] = frac
-                                                self.account_data[s]["g5h_reset"] = rtime
+                                                slot_dict["g5h_pct"] = frac
+                                                slot_dict["g5h_reset"] = rtime
                                             else:
-                                                self.account_data[s]["gwk_pct"] = frac
-                                                self.account_data[s]["gwk_reset"] = rtime
+                                                slot_dict["gwk_pct"] = frac
+                                                slot_dict["gwk_reset"] = rtime
                                 
-                                if self.account_data[s].get("cwk_pct", 100.0) <= 0.01:
-                                    self.account_data[s]["c5h_pct"] = 0.0
-                                    self.account_data[s]["c5h_reset"] = "DISABLED"
+                                if slot_dict.get("cwk_pct") is not None and slot_dict["cwk_pct"] <= 0.01:
+                                    slot_dict["c5h_pct"] = 0.0
+                                    slot_dict["c5h_reset"] = "DISABLED"
+
+                                self.account_data[s] = slot_dict
                         except Exception:
                             pass
                         finally:
