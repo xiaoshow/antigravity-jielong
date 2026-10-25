@@ -56,8 +56,8 @@ class MultiAccountHUD:
         # 折叠状态：默认如果账号数 >= 3 自动折叠，否则展开
         self.collapsed_mode = False
         
-        self.w_normal, self.h_normal = 312, 440
-        self.w_collapsed, self.h_collapsed = 312, 240
+        self.w_normal, self.h_normal = 276, 440
+        self.w_collapsed, self.h_collapsed = 276, 240
         
         screen_w = self.root.winfo_screenwidth()
         x = max(20, screen_w - self.w_normal - 25)
@@ -308,11 +308,11 @@ class MultiAccountHUD:
         slots = self.get_available_slots()
         if self.collapsed_mode:
             h = 42 + (len(slots) * 34) + 48 + (34 if len(slots) > 7 else 0)
-            w = 312
+            w = 276
         else:
             # 展开模式：根据账号数量自适应高度
             h = 42 + (len(slots) * 74) + 48 + (34 if len(slots) > 7 else 0)
-            w = 312
+            w = 276
         self.root.geometry(f"{w}x{h}")
 
     def bind_drag(self, widget):
@@ -468,7 +468,7 @@ class MultiAccountHUD:
                     txt = f"No.{slot}✓" if is_active else f"No.{slot}"
                 border = "#3b82f6" if is_active else BORDER_INACTIVE
 
-                btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=5, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
+                btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=3, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
                 btn.pack(side=tk.LEFT, padx=2, pady=4)
                 btn.bind("<Button-1>", lambda e, s=slot, b=btn, t=txt, f=fg, bg0=bg: self.confirm_switch(s, b, t, f, bg0))
 
@@ -722,13 +722,13 @@ class MultiAccountHUD:
             s = int(delta.total_seconds())
             if s <= 0:
                 return "READY"
-            h = s // 3600
-            m = (s % 3600) // 60
-            if h >= 24:
-                return f"{h // 24}d{h % 24:02d}h"
-            if h > 0:
-                return f"{h}h{m:02d}m"
-            return f"{m}m{s % 60:02d}s"
+            if s >= 86400:
+                return f"{s / 86400:.1f}d"
+            if s >= 3600:
+                return f"{s / 3600:.1f}h"
+            if s >= 60:
+                return f"{s // 60}m"
+            return f"{s}s"
         except Exception:
             return "--"
 
