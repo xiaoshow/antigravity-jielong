@@ -317,7 +317,7 @@ class MultiAccountHUD:
             rec_text = f" · 正在切换至 {self.active_slot}号..."
         elif self.is_binding:
             rec_text = " · 正在浏览器授权..."
-        elif cur_tier == "lite":
+        elif not self.has_claude(cur_d):
             cur_g5 = cur_d.get("g5h_pct")
             cur_gwk = cur_d.get("gwk_pct", 100.0)
             if cur_gwk <= 0.01:
@@ -412,8 +412,8 @@ class MultiAccountHUD:
                 btn_b.bind("<Button-1>", lambda e, s=slot: self.bind_new_slot(s))
                 continue
 
-            # 简写 C-5h（仅满血账号显示）
-            if tier != "lite":
+            # 简写 C-5h（Pro / Plus 显示）
+            if self.has_claude(data):
                 c5 = data.get("c5h_pct")
                 c5_col = self.get_color(c5)
                 tk.Label(row, text="C:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
@@ -518,7 +518,7 @@ class MultiAccountHUD:
             argon_reset = data.get("argon_reset", "")
 
             # 2. Claude 行（仅满血账号显示，残血账号隐藏）
-            if tier != "lite" and (cwk_pct is not None or c5h_pct is not None):
+            if self.has_claude(data) and (cwk_pct is not None or c5h_pct is not None):
                 c_row = tk.Frame(card, bg=bg, pady=1)
                 c_row.pack(fill=tk.X)
                 self.bind_drag(c_row)
@@ -604,6 +604,10 @@ class MultiAccountHUD:
         if data.get("argon_pct") is not None:
             return "Pro"
         return "Plus" if data.get("g5h_pct") is not None else "Free"
+
+    def has_claude(self, data):
+        """是否显示/计入 Claude 额度：Pro 有；Plus（有 Gemini 5h）也有 Claude 额度（2026-10-25 用户确认）；Free 没有"""
+        return self.tier_of(data) != "lite" or self.tier_name(data) == "Plus"
 
     def tier_of(self, data):
         """满血=有 Argon 额度；残血=没有；尚无数据返回 None"""
