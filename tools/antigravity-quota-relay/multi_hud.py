@@ -40,11 +40,12 @@ BORDER_LITE = "#2c333f"
 COLOR_PLUS = "#38bdf8"   # Plus（无 Argon，但 Gemini 有 5h 额度）
 BORDER_PLUS = "#1c3d5a"
 BORDER_FULL = "#1d4a3a"
-# 每档整块卡片的色调：(底色, 底色-活跃, 边框, 边框-活跃)；活跃只略提亮，不抢文字
+# 每档一个色调，整块卡片的字、边框、底色都用同一色系
+# (底色, 底色-活跃, 边框, 边框-活跃, 主色, 标签色, 弱化色)
 TIER_PALETTE = {
-    "Pro":  ("#111c18", "#152620", BORDER_FULL, "#34d399"),
-    "Plus": ("#101a26", "#14222f", BORDER_PLUS, "#38bdf8"),
-    "Free": ("#151820", "#1a1e27", BORDER_LITE, "#94a3b8"),
+    "Pro":  ("#1a1608", "#241d0a", "#4a3a12", "#fbbf24", "#fbbf24", "#d9ad3c", "#8f7a3a"),   # 金黄
+    "Plus": ("#0e1822", "#122030", "#1c3d5a", "#38bdf8", "#38bdf8", "#6fb9dd", "#4f7f9a"),   # 天蓝
+    "Free": ("#15181e", "#1a1e27", "#2c333f", "#94a3b8", "#cbd5e1", "#94a3b8", "#64748b"),   # 灰
 }
 
 
@@ -511,33 +512,33 @@ class MultiAccountHUD:
             # 简写 C-5h（Pro / Plus 显示）
             if self.has_claude(data):
                 c5 = data.get("c5h_pct")
-                c5_col = self.get_color(c5)
-                tk.Label(row, text="C:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                c5_col = self.pct_color(c5)
+                tk.Label(row, text="C:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
                 c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else ("  --" if c5 is None else f"{c5:4.0f}%")
                 tk.Label(row, text=c5_text, fg=c5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 G-5h
             g5 = data.get("g5h_pct")
             if g5 is not None:
-                tk.Label(row, text="G:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(row, text=f"{g5:4.0f}%", fg=self.get_color(g5), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(row, text="G:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text=f"{g5:4.0f}%", fg=self.pct_color(g5), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
             else:   # 没有 5 小时额度（Free）：折叠行显示周额度
                 gw = data.get("gwk_pct")
-                tk.Label(row, text="G周:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(row, text="  --" if gw is None else f"{gw:4.0f}%", fg=self.get_color(gw), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(row, text="G周:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text="  --" if gw is None else f"{gw:4.0f}%", fg=self.pct_color(gw), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 简写 Argon
             arg = data.get("argon_pct")
             arg_reset = data.get("argon_reset", "")
-            arg_col = self.get_color(arg)
+            arg_col = self.pct_color(arg)
             if arg is not None:
-                tk.Label(row, text="Arg:", fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(row, text="Arg:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
                 tk.Label(row, text=f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
 
             # 倒计时: 有 Argon 优先显示 Argon 倒计时；无 Argon 显示 G-Wk / C-Wk 周倒计时
             main_reset = arg_reset or data.get("gwk_reset") or data.get("cwk_reset")
             if main_reset:
-                t_cnt = tk.Label(row, text=self.format_countdown(main_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t_cnt = tk.Label(row, text=self.format_countdown(main_reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
                 t_cnt.pack(side=tk.RIGHT)
                 self.bind_drag(t_cnt)
                 self.time_labels.append((t_cnt, main_reset))
@@ -568,7 +569,7 @@ class MultiAccountHUD:
             if tier:
                 tname = self.tier_name(data)
                 l_tier = tk.Label(header_row, text=tname,
-                                  fg={"Pro": COLOR_FULL, "Plus": COLOR_PLUS}.get(tname, COLOR_LITE), bg=bg, font=("SF Pro Text", 8, "bold"))
+                                  fg=accent, bg=bg, font=("SF Pro Text", 8, "bold"))
                 l_tier.pack(side=tk.LEFT, padx=(4, 0))
                 self.bind_drag(l_tier)
 
@@ -587,7 +588,7 @@ class MultiAccountHUD:
 
             if email:
                 mail_short = email if len(email) <= 24 else email.split("@")[0] + "@..."
-                l_mail = tk.Label(header_row, text=mail_short, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                l_mail = tk.Label(header_row, text=mail_short, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
                 l_mail.pack(side=tk.LEFT, padx=(6, 0))
                 self.bind_drag(l_mail)
 
@@ -614,28 +615,28 @@ class MultiAccountHUD:
                 self.bind_drag(c_row)
 
                 if c5h_pct is not None:
-                    c5h_col = self.get_color(c5h_pct)
+                    c5h_col = self.pct_color(c5h_pct)
                     c5h_txt = f"{c5h_pct:3.0f}%"
-                    tk.Label(c_row, text="C-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                    tk.Label(c_row, text="C-5h", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                     tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
                     
                     t1_txt = self.format_countdown(c5h_reset)
-                    t1 = tk.Label(c_row, text=t1_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                    t1 = tk.Label(c_row, text=t1_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
                     t1.pack(side=tk.LEFT, padx=(0, 10))
                     self.bind_drag(t1)
                     if c5h_reset:
                         self.time_labels.append((t1, c5h_reset))
 
-                cwk_col = self.get_color(cwk_pct)
+                cwk_col = self.pct_color(cwk_pct)
                 if cwk_pct is None:
                     cwk_txt = "未开通"
-                    cwk_col = TEXT_MUTED
+                    cwk_col = self._th["muted"]
                 else:
                     cwk_txt = f"{cwk_pct:3.0f}%"
-                tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(c_row, text="C-Wk", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
                 t2_txt = "--" if not cwk_reset else self.format_countdown(cwk_reset)
-                t2 = tk.Label(c_row, text=t2_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t2 = tk.Label(c_row, text=t2_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
                 t2.pack(side=tk.LEFT)
                 self.bind_drag(t2)
                 if cwk_reset:
@@ -647,23 +648,23 @@ class MultiAccountHUD:
             self.bind_drag(g_row)
 
             if g5h_pct is not None:  # 没有 5 小时额度的账号（Free）不显示 G-5h
-                g5h_col = self.get_color(g5h_pct)
+                g5h_col = self.pct_color(g5h_pct)
                 g5h_txt = f"{g5h_pct:3.0f}%"
-                tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(g_row, text="G-5h", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
 
                 t_g5_txt = "--" if not g5h_reset else self.format_countdown(g5h_reset)
-                t_g5 = tk.Label(g_row, text=t_g5_txt, fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+                t_g5 = tk.Label(g_row, text=t_g5_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
                 t_g5.pack(side=tk.LEFT, padx=(0, 10))
                 self.bind_drag(t_g5)
                 if g5h_reset:
                     self.time_labels.append((t_g5, g5h_reset))
 
-            gwk_col = self.get_color(gwk_pct)
+            gwk_col = self.pct_color(gwk_pct)
             gwk_txt = "  --" if gwk_pct is None else f"{gwk_pct:3.0f}%"
-            tk.Label(g_row, text="G-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            tk.Label(g_row, text="G-Wk", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
             tk.Label(g_row, text=gwk_txt, fg=gwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            t_gwk = tk.Label(g_row, text=self.format_countdown(gwk_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
+            t_gwk = tk.Label(g_row, text=self.format_countdown(gwk_reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
             t_gwk.pack(side=tk.LEFT)
             self.bind_drag(t_gwk)
             self.time_labels.append((t_gwk, gwk_reset))
@@ -674,14 +675,14 @@ class MultiAccountHUD:
                 arg_row.pack(fill=tk.X)
                 self.bind_drag(arg_row)
 
-                arg_col = self.get_color(argon_pct)
+                arg_col = self.pct_color(argon_pct)
                 arg_txt = "不支持" if argon_pct is None else f"{argon_pct:3.0f}%"
-                tk.Label(arg_row, text="Argon", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                tk.Label(arg_row, text="Argon", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
 
-                tk.Label(arg_row, text="复位:", fg=TEXT_MUTED, bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
+                tk.Label(arg_row, text="复位:", fg=self._th["muted"], bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
                 t_arg_txt = "--" if argon_pct is None else self.format_countdown(argon_reset)
-                t_arg = tk.Label(arg_row, text=t_arg_txt, fg=COLOR_CYAN if (argon_pct and argon_pct < 20) else TEXT_MUTED, bg=bg, font=("SF Mono", 8, "bold"))
+                t_arg = tk.Label(arg_row, text=t_arg_txt, fg=self._th["hi"] if (argon_pct and argon_pct < 20) else self._th["muted"], bg=bg, font=("SF Mono", 8, "bold"))
                 t_arg.pack(side=tk.LEFT, padx=(2, 0))
                 self.bind_drag(t_arg)
                 if argon_pct is not None:
@@ -696,13 +697,24 @@ class MultiAccountHUD:
         return "Plus" if data.get("g5h_pct") is not None else "Free"
 
     def card_colors(self, data, has_token, is_active):
-        """按档位给整块卡片配色：返回 (底色, 边框, 主色)"""
-        if not has_token:
+        """按档位给整块卡片配色：返回 (底色, 边框, 主色)，并把本卡的字色存到 self._th"""
+        name = self.tier_name(data) if has_token else None
+        if not name:
+            self._th = {"label": TEXT_SECONDARY, "muted": TEXT_MUTED, "hi": COLOR_CYAN, "ok": COLOR_GREEN}
             return CARD_BG, BORDER_INACTIVE, TEXT_PRIMARY
-        name = self.tier_name(data)
-        bg, bg_a, bd, bd_a = TIER_PALETTE.get(name, TIER_PALETTE["Free"])
-        accent = {"Pro": COLOR_FULL, "Plus": COLOR_PLUS}.get(name, COLOR_LITE)
+        bg, bg_a, bd, bd_a, accent, label, muted = TIER_PALETTE[name]
+        self._th = {"label": label, "muted": muted, "hi": accent, "ok": accent}
         return (bg_a if is_active else bg), (bd_a if is_active else bd), accent
+
+    def pct_color(self, pct):
+        """百分比：健康用本档主色，偏低才用橙/红提醒"""
+        if pct is None:
+            return self._th["muted"]
+        if pct < 15:
+            return COLOR_RED
+        if pct < 45:
+            return "#fb923c"
+        return self._th["ok"]
 
     def has_claude(self, data):
         """是否显示/计入 Claude 额度：Pro 有；Plus（有 Gemini 5h）也有 Claude 额度（2026-10-25 用户确认）；Free 没有"""
