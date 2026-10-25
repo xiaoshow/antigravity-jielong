@@ -302,6 +302,22 @@ class MultiAccountHUD:
                 pass
         return True
 
+    def sync_app_login(self, slot):
+        """客户端读 app_storage 里的 lastLoginUsername 判断账号；借号轮询会把它留在最后借的槽位上，这里始终对齐到活跃号"""
+        email = self.account_emails.get(slot, "")
+        if not email or not os.path.exists(APP_STORAGE):
+            return
+        try:
+            with open(APP_STORAGE, "r", encoding="utf-8") as af:
+                st = json.load(af)
+            if st.get("jetski.onboarding.lastLoginUsername") == email:
+                return
+            st["jetski.onboarding.lastLoginUsername"] = email
+            with open(APP_STORAGE, "w", encoding="utf-8") as af:
+                json.dump(st, af, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
     def on_press(self, event):
         self.drag_start_x = event.x
         self.drag_start_y = event.y
@@ -1030,6 +1046,7 @@ class MultiAccountHUD:
             self._last_watch = now
             try:
                 self.adopt_live()
+                self.sync_app_login(self.active_slot)
             except Exception:
                 pass
 
