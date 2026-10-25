@@ -12,6 +12,7 @@ import hashlib, sys, os, time, datetime, json, base64, subprocess, threading, gl
 import tkinter as tk
 
 MAX_SLOTS = 8
+ROTATING_FILE = os.path.expanduser("~/.gemini/account_vault/.rotating")
 ALL_SLOTS = [str(i) for i in range(1, MAX_SLOTS + 1)]
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
 CACHE_FILE = os.path.expanduser("~/.gemini/account_vault/multi_quota_cache.json")
@@ -75,6 +76,13 @@ class MultiAccountHUD:
         
         self.account_emails = self.load_emails()
         self.active_slot = self.load_active_slot() or self.detect_current_slot()
+        if os.path.exists(ROTATING_FILE):
+            # 上一次在借用各号凭据拉额度的途中被杀掉，钥匙串里留的是中途的号，不可信：按记住的号还原
+            self.apply_slot_credentials(self.active_slot)
+            try:
+                os.remove(ROTATING_FILE)
+            except OSError:
+                pass
         self.active_model_group = self.detect_active_model_group()
         self.account_data = {}
         
@@ -835,6 +843,7 @@ class MultiAccountHUD:
             try:
                 with self.keychain_lock:
                     live_snapshot = self.adopt_live()
+                    open(ROTATING_FILE, "w").close()
                 for s in ALL_SLOTS:
                     if self.switching_slot or os.path.exists(LOCK_FILE):
                         break
@@ -928,6 +937,10 @@ class MultiAccountHUD:
                                 self.apply_slot_credentials(self.active_slot)
                 self.save_cache()
             except Exception:
+                pass
+            try:
+                os.remove(ROTATING_FILE)
+            except OSError:
                 pass
             self.last_fetch_ts = time.time()
             self.root.after(0, self.on_done)
