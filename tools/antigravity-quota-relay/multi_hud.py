@@ -308,11 +308,11 @@ class MultiAccountHUD:
         slots = self.get_available_slots()
         if self.collapsed_mode:
             h = 42 + (len(slots) * 34) + 48 + (34 if len(slots) > 7 else 0)
-            w = 370
+            w = 312
         else:
             # 展开模式：根据账号数量自适应高度
-            h = 42 + (len(slots) * 88) + 48 + (34 if len(slots) > 7 else 0)
-            w = 370
+            h = 42 + (len(slots) * 74) + 48 + (34 if len(slots) > 7 else 0)
+            w = 312
         self.root.geometry(f"{w}x{h}")
 
     def bind_drag(self, widget):
@@ -550,13 +550,13 @@ class MultiAccountHUD:
             tier = self.tier_of(data) if has_token else None
             if tier == "lite" and not is_active:
                 border = BORDER_PLUS if self.tier_name(data) == "Plus" else BORDER_LITE
-            card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=10, pady=4)
-            card.pack(fill=tk.X, pady=3)
+            card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=7, pady=2)
+            card.pack(fill=tk.X, pady=2)
             self.bind_drag(card)
 
             # 1. 头部
             header_row = tk.Frame(card, bg=bg)
-            header_row.pack(fill=tk.X, pady=(0, 2))
+            header_row.pack(fill=tk.X, pady=(0, 0))
             self.bind_drag(header_row)
 
             l_slot = tk.Label(header_row, text=f"{slot}号", fg=(COLOR_PLUS if self.tier_name(data) == "Plus" else COLOR_LITE) if tier == "lite" else TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
@@ -589,9 +589,7 @@ class MultiAccountHUD:
                 self.bind_drag(l_mail)
 
             if is_active:
-                badge = tk.Label(header_row, text="● 活跃中", fg=COLOR_GREEN, bg=bg, font=("SF Pro Text", 8, "bold"))
-                badge.pack(side=tk.RIGHT)
-                self.bind_drag(badge)
+                l_slot.configure(text=f"●{slot}号", fg=COLOR_GREEN)
 
             c5h_pct = data.get("c5h_pct")
             c5h_reset = data.get("c5h_reset", "")
@@ -614,7 +612,7 @@ class MultiAccountHUD:
 
                 if c5h_pct is not None:
                     c5h_col = self.get_color(c5h_pct)
-                    c5h_txt = f"{c5h_pct:5.1f}%"
+                    c5h_txt = f"{c5h_pct:3.0f}%"
                     tk.Label(c_row, text="C-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                     tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
                     
@@ -630,7 +628,7 @@ class MultiAccountHUD:
                     cwk_txt = "未开通"
                     cwk_col = TEXT_MUTED
                 else:
-                    cwk_txt = f"{cwk_pct:5.1f}%"
+                    cwk_txt = f"{cwk_pct:3.0f}%"
                 tk.Label(c_row, text="C-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
                 t2_txt = "--" if not cwk_reset else self.format_countdown(cwk_reset)
@@ -647,7 +645,7 @@ class MultiAccountHUD:
 
             if g5h_pct is not None:  # 没有 5 小时额度的账号（Free）不显示 G-5h
                 g5h_col = self.get_color(g5h_pct)
-                g5h_txt = f"{g5h_pct:5.1f}%"
+                g5h_txt = f"{g5h_pct:3.0f}%"
                 tk.Label(g_row, text="G-5h", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
 
@@ -659,7 +657,7 @@ class MultiAccountHUD:
                     self.time_labels.append((t_g5, g5h_reset))
 
             gwk_col = self.get_color(gwk_pct)
-            gwk_txt = "  --  " if gwk_pct is None else f"{gwk_pct:5.1f}%"
+            gwk_txt = "  --" if gwk_pct is None else f"{gwk_pct:3.0f}%"
             tk.Label(g_row, text="G-Wk", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
             tk.Label(g_row, text=gwk_txt, fg=gwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
             t_gwk = tk.Label(g_row, text=self.format_countdown(gwk_reset), fg=TEXT_MUTED, bg=bg, font=("SF Mono", 8))
@@ -674,7 +672,7 @@ class MultiAccountHUD:
                 self.bind_drag(arg_row)
 
                 arg_col = self.get_color(argon_pct)
-                arg_txt = "不支持" if argon_pct is None else f"{argon_pct:5.1f}%"
+                arg_txt = "不支持" if argon_pct is None else f"{argon_pct:3.0f}%"
                 tk.Label(arg_row, text="Argon", fg=TEXT_SECONDARY, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
                 tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
 
