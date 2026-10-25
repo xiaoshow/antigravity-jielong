@@ -34,11 +34,20 @@ try:
 except Exception:
     pass
 
-# 2. 写入系统钥匙串
+# 2. 写入系统钥匙串与凭证文件
 subprocess.run(
     ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", raw_token],
     check=True, stderr=subprocess.DEVNULL
 )
+try:
+    standalone_f = os.path.expanduser("~/.gemini/jetski-standalone-oauth-token")
+    cli_tok_f = os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token")
+    b64_p = raw_token.replace("go-keyring-base64:", "")
+    dec_j = base64.b64decode(b64_p).decode("utf-8")
+    with open(standalone_f, "w", encoding="utf-8") as sf: sf.write(dec_j)
+    with open(cli_tok_f, "w", encoding="utf-8") as cf: cf.write(dec_j)
+except Exception:
+    pass
 
 # 3. 更新桌面 App 用户偏好设置
 if email and os.path.exists(app_storage):
