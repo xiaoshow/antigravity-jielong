@@ -1023,6 +1023,16 @@ class MultiAccountHUD:
         for lbl, rtime in getattr(self, "time_labels", []):
             lbl.configure(text=self.format_countdown(rtime))
 
+        # 每 2 秒廉价检查一次钥匙串，CLI/App 里切号后立刻跟随，不用等整轮刷新
+        now = time.time()
+        if (now - getattr(self, "_last_watch", 0) >= 2 and not self.is_fetching and not self.is_binding
+                and not self.switching_slot and not os.path.exists(ROTATING_FILE) and not os.path.exists(LOCK_FILE)):
+            self._last_watch = now
+            try:
+                self.adopt_live()
+            except Exception:
+                pass
+
         if not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
             
