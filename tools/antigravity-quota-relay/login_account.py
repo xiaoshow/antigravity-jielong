@@ -173,6 +173,12 @@ if not token_to_save:
         # 上锁，防止后台多账号 HUD 轮询并发冲突钥匙串
         with open(LOCK_FILE, "w") as f:
             f.write(str(os.getpid()))
+        # HUD 正在轮换凭据时，钥匙串里是借用的别的号：等这一轮结束再备份「当前登录状态」
+        _rot = os.path.join(VAULT_DIR, ".rotating")
+        for _ in range(120):
+            if not os.path.exists(_rot):
+                break
+            time.sleep(1)
 
         if os.path.exists(CAPTURED_URL_FILE):
             try: os.remove(CAPTURED_URL_FILE)
@@ -207,6 +213,16 @@ if not token_to_save:
                 break
 
         def restore_env(sig=None, frame=None):
+            try:
+                _act = open(os.path.join(VAULT_DIR, ".active_slot")).read().strip()
+                _ap = os.path.join(VAULT_DIR, f"acc{_act}.token")
+                if _act and os.path.exists(_ap) and _act != str(slot):
+                    with open(_ap) as _f:
+                        cur_token_slot = _f.read().strip()
+                    if cur_token_slot:
+                        globals()["cur_token"] = cur_token_slot
+            except Exception:
+                pass
             if cur_token:
                 subprocess.run(
                     ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", cur_token],
@@ -214,9 +230,11 @@ if not token_to_save:
                 )
             if os.path.exists(b1): shutil.move(b1, f1)
             if os.path.exists(b2): shutil.move(b2, f2)
-            if os.path.exists(LOCK_FILE):
-                try: os.remove(LOCK_FILE)
-                except Exception: pass
+            try:
+                if os.path.exists(LOCK_FILE) and open(LOCK_FILE).read().strip() == str(os.getpid()):
+                    os.remove(LOCK_FILE)
+            except Exception:
+                pass
             if os.path.exists(CAPTURED_URL_FILE):
                 try: os.remove(CAPTURED_URL_FILE)
                 except Exception: pass
@@ -234,139 +252,151 @@ if not token_to_save:
             print("", flush=True)
             print("🚀 正在向 Google 申请官方授权链接...", flush=True)
 
-            # 调起 agy，输出完全重定向，防止控制台打印冗余的 Quota
-            proc = subprocess.Popen(
-                ["/Users/weinliu/.local/bin/agy", "-p", "/usage"],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.PIPE
-            )
-
-            # 等待拦截器截获 Google 官方授权 URL
-            auth_url = ""
-            for _ in range(30):
+            for attempt in range(1 if choice == "1" else 8):
                 if os.path.exists(CAPTURED_URL_FILE):
+                    try: os.remove(CAPTURED_URL_FILE)
+                    except Exception: pass
+                # 调起 agy，输出完全重定向，防止控制台打印冗余的 Quota
+                proc = subprocess.Popen(
+                    ["/Users/weinliu/.local/bin/agy", "-p", "/usage"],
+                    env=env,
+                    stdout=open(os.path.join(VAULT_DIR, "login_agy.log"), "w"),
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE
+                )
+
+                # 等待拦截器截获 Google 官方授权 URL
+                auth_url = ""
+                for _ in range(30):
+                    if os.path.exists(CAPTURED_URL_FILE):
+                        try:
+                            with open(CAPTURED_URL_FILE, "r") as uf:
+                                auth_url = uf.read().strip()
+                            if auth_url:
+                                break
+                        except Exception:
+                            pass
+                    time.sleep(0.3)
+
+                if not auth_url:
+                    print("❌ 未能获取到授权链接，请检查网络或重试。", flush=True)
+                    proc.kill()
+                    sys.exit(1)
+
+                print("", flush=True)
+                print("======================================================================", flush=True)
+                print("🔗 Google 官方授权链接已生成：", flush=True)
+                print(auth_url, flush=True)
+                print("======================================================================", flush=True)
+                print("", flush=True)
+
+                if choice == "1":
+                    print("🌐 [自动模式] 浏览器已自动调起（弹出账号列表供点选）...", flush=True)
+                    print("👉 请在浏览器中点击你要绑定的账号，并确认授权！", flush=True)
+                else:
+                    print("📋 [手动模式] 请复制上方链接，粘贴到你已登录该账号的任意浏览器窗口打开！", flush=True)
+                    print("👉 在浏览器授权后会显示一串 code（4/0A 开头），本终端只等你把它粘贴进来，不会自动接收。", flush=True)
+
+                if choice == "2":
+                    print("💡 链接 60 秒内有效：授权后复制那串 code，粘贴到这里按回车。超时会自动换新链接（以最新那条为准）。", flush=True)
+                    wait_secs = 66   # agy 自己只等 60 秒授权，超时就退出；这里按 60 秒算，过期自动换新链接
+                else:
+                    wait_secs = 120
+                print(f"⏳ {'等你粘贴 code' if choice == '2' else '等待浏览器授权回调'}（第 {attempt + 1} 次，最长 {wait_secs} 秒）...", flush=True)
+
+                def relay_callback(url):
+                    """把用户粘回来的回调网址（或 code）转交给本机 agy 的接收端口"""
+                    url = url.strip()
+                    if url.startswith("4/") and "://" not in url:
+                        try:
+                            proc.stdin.write((url + "\n").encode()); proc.stdin.flush()
+                            print("✅ 已把 code 交给 agy，正在接收凭证...", flush=True)
+                            return
+                        except Exception as e:
+                            print(f"⚠️ 写入 agy 失败：{e}", flush=True)
+                    if "://" not in url and "code=" not in url:
+                        url = "https://antigravity.google/oauth-callback?code=" + urllib.parse.quote(url)
+                    u = urllib.parse.urlparse(url)
+                    query = u.query or urllib.parse.urlparse(url.replace("#", "?")).query
+                    if "code=" not in query:
+                        print("⚠️ 没找到授权码（需含 code=），已忽略。请粘贴浏览器地址栏的完整网址。", flush=True)
+                        return
+                    if u.hostname in ("localhost", "127.0.0.1"):
+                        targets = [url.replace("localhost", "127.0.0.1")]
+                    else:
+                        # antigravity.google/oauth-callback 等网页地址：改投 agy 进程本机监听的端口
+                        out = subprocess.run(["lsof", "-nP", "-a", "-p", str(proc.pid), "-iTCP", "-sTCP:LISTEN"],
+                                             capture_output=True, text=True).stdout
+                        ports = sorted({l.split(":")[-1].split()[0] for l in out.splitlines() if "LISTEN" in l})
+                        targets = [f"http://127.0.0.1:{pt}{path}?{query}" for pt in ports
+                                   for path in ("/oauth-callback", "/oauth2callback", "/callback", "/")]
+                        if not ports:
+                            print("⚠️ 找不到本机接收端口（agy 可能已退出），请重新运行绑定。", flush=True)
+                            return
+                    for t in targets:
+                        try:
+                            urllib.request.urlopen(t, timeout=5).read()
+                            print("✅ 已提交授权，正在接收凭证...", flush=True)
+                            return
+                        except Exception:
+                            continue
+                    print("⚠️ 提交失败（授权可能已过期），请重新运行绑定。", flush=True)
+
+                # 轮询获取新 Token
+                import select
+                _gone = 0
+                pasted_once = False   # 手动模式：用户粘贴过 code 之前，不接受任何凭据（后台程序可能写回旧账号凭据）
+                _deadline = time.time() + wait_secs
+                for _ in iter(lambda: time.time() < _deadline, False):
+                    if choice == "2" and select.select([sys.stdin], [], [], 0)[0]:
+                        pasted = sys.stdin.readline().strip()
+                        if pasted:
+                            pasted_once = True
+                            relay_callback(pasted)
+                    if choice == "2" and not pasted_once:
+                        time.sleep(0.5)
+                        continue
+                    # 检查钥匙串
                     try:
-                        with open(CAPTURED_URL_FILE, "r") as uf:
-                            auth_url = uf.read().strip()
-                        if auth_url:
+                        new_token = subprocess.check_output(
+                            ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+                            stderr=subprocess.DEVNULL
+                        ).decode().strip()
+                        if new_token and new_token != cur_token and refresh_fp(new_token) not in known_fps:
+                            token_to_save = new_token
                             break
                     except Exception:
                         pass
-                time.sleep(0.3)
 
-            if not auth_url:
-                print("❌ 未能获取到授权链接，请检查网络或重试。", flush=True)
-                proc.kill()
-                sys.exit(1)
+                    # 检查独立 token 文件
+                    if os.path.exists(f1):
+                        try:
+                            with open(f1, "r", encoding="utf-8") as sf:
+                                sdata = json.load(sf)
+                            if sdata.get("token") or sdata.get("id_token_email"):
+                                sb64 = base64.b64encode(json.dumps(sdata).encode("utf-8")).decode("utf-8")
+                                cand = "go-keyring-base64:" + sb64
+                                if refresh_fp(cand) not in known_fps:
+                                    token_to_save = cand
+                                    break
+                        except Exception:
+                            pass
 
-            print("", flush=True)
-            print("======================================================================", flush=True)
-            print("🔗 Google 官方授权链接已生成：", flush=True)
-            print(auth_url, flush=True)
-            print("======================================================================", flush=True)
-            print("", flush=True)
-
-            if choice == "1":
-                print("🌐 [自动模式] 浏览器已自动调起（弹出账号列表供点选）...", flush=True)
-                print("👉 请在浏览器中点击你要绑定的账号，并确认授权！", flush=True)
-            else:
-                print("📋 [手动模式] 请复制上方链接，粘贴到你已登录该账号的任意浏览器窗口打开！", flush=True)
-                print("👉 在浏览器点击账号完成授权后，本终端将自动接收凭证（无需手动复制 Token）...", flush=True)
-
-            if choice == "2":
-                print("💡 浏览器授权后会显示一串 code（4/0A 开头）：复制它，粘贴到这里按回车即可。", flush=True)
-                wait_secs = 600
-            else:
-                wait_secs = 120
-            print(f"⏳ 等待浏览器授权回调中（最长 {wait_secs} 秒）...", flush=True)
-
-            def relay_callback(url):
-                """把用户粘回来的回调网址（或 code）转交给本机 agy 的接收端口"""
-                url = url.strip()
-                if url.startswith("4/") and "://" not in url:
-                    try:
-                        proc.stdin.write((url + "\n").encode()); proc.stdin.flush()
-                        print("✅ 已把 code 交给 agy，正在接收凭证...", flush=True)
-                        return
-                    except Exception as e:
-                        print(f"⚠️ 写入 agy 失败：{e}", flush=True)
-                if "://" not in url and "code=" not in url:
-                    url = "https://antigravity.google/oauth-callback?code=" + urllib.parse.quote(url)
-                u = urllib.parse.urlparse(url)
-                query = u.query or urllib.parse.urlparse(url.replace("#", "?")).query
-                if "code=" not in query:
-                    print("⚠️ 没找到授权码（需含 code=），已忽略。请粘贴浏览器地址栏的完整网址。", flush=True)
-                    return
-                if u.hostname in ("localhost", "127.0.0.1"):
-                    targets = [url.replace("localhost", "127.0.0.1")]
-                else:
-                    # antigravity.google/oauth-callback 等网页地址：改投 agy 进程本机监听的端口
-                    out = subprocess.run(["lsof", "-nP", "-a", "-p", str(proc.pid), "-iTCP", "-sTCP:LISTEN"],
-                                         capture_output=True, text=True).stdout
-                    ports = sorted({l.split(":")[-1].split()[0] for l in out.splitlines() if "LISTEN" in l})
-                    targets = [f"http://127.0.0.1:{pt}{path}?{query}" for pt in ports
-                               for path in ("/oauth-callback", "/oauth2callback", "/callback", "/")]
-                    if not ports:
-                        print("⚠️ 找不到本机接收端口（agy 可能已退出），请重新运行绑定。", flush=True)
-                        return
-                for t in targets:
-                    try:
-                        urllib.request.urlopen(t, timeout=5).read()
-                        print("✅ 已提交授权，正在接收凭证...", flush=True)
-                        return
-                    except Exception:
-                        continue
-                print("⚠️ 提交失败（授权可能已过期），请重新运行绑定。", flush=True)
-
-            # 轮询获取新 Token
-            import select
-            pasted_once = False   # 手动模式：用户粘贴过 code 之前，不接受任何凭据（后台程序可能写回旧账号凭据）
-            _deadline = time.time() + wait_secs
-            for _ in iter(lambda: time.time() < _deadline, False):
-                if choice == "2" and select.select([sys.stdin], [], [], 0)[0]:
-                    pasted = sys.stdin.readline().strip()
-                    if pasted:
-                        pasted_once = True
-                        relay_callback(pasted)
-                if choice == "2" and not pasted_once:
-                    time.sleep(0.5)
-                    continue
-                # 检查钥匙串
-                try:
-                    new_token = subprocess.check_output(
-                        ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
-                        stderr=subprocess.DEVNULL
-                    ).decode().strip()
-                    if new_token and new_token != cur_token and refresh_fp(new_token) not in known_fps:
-                        token_to_save = new_token
+                    time.sleep(1.0)
+                    if proc.poll() is not None and token_to_save:
                         break
+                    if proc.poll() is not None and not token_to_save:
+                        _gone = locals().get("_gone", 0) + 1
+                        if _gone >= 2:
+                            break
+
+                try:
+                    proc.terminate()
                 except Exception:
                     pass
-
-                # 检查独立 token 文件
-                if os.path.exists(f1):
-                    try:
-                        with open(f1, "r", encoding="utf-8") as sf:
-                            sdata = json.load(sf)
-                        if sdata.get("token") or sdata.get("id_token_email"):
-                            sb64 = base64.b64encode(json.dumps(sdata).encode("utf-8")).decode("utf-8")
-                            cand = "go-keyring-base64:" + sb64
-                            if refresh_fp(cand) not in known_fps:
-                                token_to_save = cand
-                                break
-                    except Exception:
-                        pass
-
-                time.sleep(1.0)
-                if proc.poll() is not None and token_to_save:
+                if token_to_save or choice == "1":
                     break
-
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+                print("\n🔄 这条链接已过期（agy 只等 60 秒），正在生成新链接，请改用下面这一条...\n", flush=True)
 
         finally:
             restore_env()
