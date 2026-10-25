@@ -110,6 +110,27 @@ for s in [str(i) for i in range(1, 9)]:
         except Exception:
             pass
 
+import hashlib
+def refresh_fp(blob):
+    try:
+        d = json.loads(base64.b64decode(blob.strip().replace("go-keyring-base64:", "")))
+        rt = d.get("token", {}).get("refresh_token", "") or d.get("refresh_token", "")
+        return hashlib.sha1(rt.encode()).hexdigest() if rt else ""
+    except Exception:
+        return ""
+
+known_fps = set()
+for _s in [str(i) for i in range(1, 9)]:
+    _p = os.path.join(VAULT_DIR, f"acc{_s}.token")
+    if os.path.exists(_p):
+        try:
+            with open(_p, "r", encoding="utf-8") as _f:
+                _fp = refresh_fp(_f.read())
+            if _fp:
+                known_fps.add(_fp)
+        except Exception:
+            pass
+
 clipboard_token = None
 try:
     cb = subprocess.check_output(["pbpaste"]).decode("utf-8", errors="ignore").strip()
@@ -301,18 +322,24 @@ if not token_to_save:
 
             # 轮询获取新 Token
             import select
-            for _ in range(wait_secs):
+            pasted_once = False   # 手动模式：用户粘贴过 code 之前，不接受任何凭据（后台程序可能写回旧账号凭据）
+            _deadline = time.time() + wait_secs
+            for _ in iter(lambda: time.time() < _deadline, False):
                 if choice == "2" and select.select([sys.stdin], [], [], 0)[0]:
                     pasted = sys.stdin.readline().strip()
                     if pasted:
+                        pasted_once = True
                         relay_callback(pasted)
+                if choice == "2" and not pasted_once:
+                    time.sleep(0.5)
+                    continue
                 # 检查钥匙串
                 try:
                     new_token = subprocess.check_output(
                         ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
                         stderr=subprocess.DEVNULL
                     ).decode().strip()
-                    if new_token and new_token != cur_token:
+                    if new_token and new_token != cur_token and refresh_fp(new_token) not in known_fps:
                         token_to_save = new_token
                         break
                 except Exception:
@@ -325,8 +352,10 @@ if not token_to_save:
                             sdata = json.load(sf)
                         if sdata.get("token") or sdata.get("id_token_email"):
                             sb64 = base64.b64encode(json.dumps(sdata).encode("utf-8")).decode("utf-8")
-                            token_to_save = "go-keyring-base64:" + sb64
-                            break
+                            cand = "go-keyring-base64:" + sb64
+                            if refresh_fp(cand) not in known_fps:
+                                token_to_save = cand
+                                break
                     except Exception:
                         pass
 
