@@ -349,6 +349,24 @@ class MultiAccountHUD:
         except OSError:
             return None
 
+    FOLD_FILE = os.path.join(os.path.expanduser("~/.gemini/account_vault"), ".folded_slots")
+
+    def load_folded(self):
+        try:
+            return {x for x in open(self.FOLD_FILE).read().split() if x in ALL_SLOTS}
+        except OSError:
+            return set()
+
+    def toggle_fold(self, slot):
+        folded = self.load_folded()
+        folded.symmetric_difference_update({slot})
+        try:
+            with open(self.FOLD_FILE, "w") as f:
+                f.write(" ".join(sorted(folded)))
+        except OSError:
+            pass
+        self.setup_ui()
+
     def save_active_slot(self, slot):
         try:
             with open(self.ACTIVE_FILE, "w") as f:
@@ -603,6 +621,14 @@ class MultiAccountHUD:
 
             if is_active:
                 l_slot.configure(text=f"▸{slot}号")
+
+            is_folded = slot in self.load_folded()
+            fold_btn = tk.Label(header_row, text="＋" if is_folded else "－", fg=self._th["muted"], bg=bg,
+                                font=("SF Mono", 10, "bold"), cursor="pointinghand", padx=4)
+            fold_btn.pack(side=tk.RIGHT)
+            fold_btn.bind("<Button-1>", lambda e, sl=slot: self.toggle_fold(sl))
+            if is_folded:
+                continue
 
             c5h_pct = data.get("c5h_pct")
             c5h_reset = data.get("c5h_reset", "")
