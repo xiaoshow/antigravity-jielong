@@ -205,55 +205,67 @@ class MultiAccountHUD:
             pass
 
     def adopt_live(self):
-        """以钥匙串里正在用的凭据为准判定当前账号（异步跟随 CLI/App 里的登录、切换），
-        而不是把保险库推过去覆盖。返回需要在刷新结束后还原的快照。"""
-        live = self.read_live_blob()
-        if not live:
-            return ""
-        h = self._refresh_hash(live)
+        """以系统中实际生效的凭据/状态为准判定当前账号（异步跟随 CLI / 桌面 App / 钥匙串），
+        返回当前活跃账号的凭据快照。"""
         match = None
-        if h:
-            for slot in ALL_SLOTS:
-                try:
-                    with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
-                        if self._refresh_hash(f.read()) == h:
+
+        # 1. 优先检查 .active_slot 文件（由 switch.py / agy-switch 显式切换写入）
+        try:
+            if os.path.exists(self.ACTIVE_FILE):
+                v = open(self.ACTIVE_FILE).read().strip()
+                if v in ALL_SLOTS and v != self.active_slot and os.path.exists(os.path.join(VAULT_DIR, f"acc{v}.token")):
+                    match = v
+        except Exception:
+            pass
+
+        # 不看 jetski-standalone-oauth-token：它跟着钥匙串里被借用的凭据一起变（轮换时依次变成 1、2、3…），
+        # 刷新开始前读到的往往是上一轮借用的残留，会把刚切好的 8 号改回 1/2（2026-10-26 实测）。
+
+        # 2. 检查钥匙串凭据
+        live = self.read_live_blob()
+        if not match and live:
+            h = self._refresh_hash(live)
+            if h:
+                for slot in ALL_SLOTS:
+                    try:
+                        with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
+                            if self._refresh_hash(f.read()) == h:
+                                match = slot
+                                break
+                    except OSError:
+                        pass
+            if not match:
+                email = self.extract_email_from_token(live)
+                if email:
+                    for slot, e in self.account_emails.items():
+                        if e and e.lower() == email.lower():
                             match = slot
                             break
-                except OSError:
-                    pass
-        if not match:
-            # 新登录/换了号：按邮箱找槽位
-            email = self.extract_email_from_token(live)
-            if email:
-                for slot, e in self.account_emails.items():
-                    if e.lower() == email:
-                        match = slot
-                        break
-        if match:
-            # 实际在用的凭据比保险库新（刷新了 access token，或重新登录换了 refresh token）：写回保险库，并保留缓存的邮箱
+
+        if match and match != self.active_slot:
+            self.active_slot = match
+            self.save_active_slot(match)
+            self.apply_slot_credentials(match)
+            self.root.after(0, self.setup_ui)
+
+        tpath = os.path.join(VAULT_DIR, f"acc{self.active_slot}.token")
+        if os.path.exists(tpath):
             try:
-                tpath = os.path.join(VAULT_DIR, f"acc{match}.token")
                 with open(tpath) as f:
-                    old = f.read().strip()
-                if old != live:
-                    new_d = json.loads(base64.b64decode(live.replace("go-keyring-base64:", "")))
-                    try:
-                        old_d = json.loads(base64.b64decode(old.replace("go-keyring-base64:", "")))
-                    except Exception:
-                        old_d = {}
-                    em = new_d.get("id_token_email") or old_d.get("id_token_email") or self.account_emails.get(match, "")
-                    if em:
-                        new_d["id_token_email"] = em
-                    with open(tpath, "w") as f:
-                        f.write("go-keyring-base64:" + base64.b64encode(json.dumps(new_d).encode("utf-8")).decode("utf-8"))
-                    self.account_emails[match] = em
-            except (OSError, ValueError):
+                    return f.read().strip()
+            except Exception:
                 pass
-            if match != self.active_slot:
-                self.active_slot = match
-                self.save_active_slot(match)
-                self.root.after(0, self.setup_ui)
-        return live
+        return live or ""
+
+    def external_switch(self):
+        """CLI/switch.py 在轮换途中切号：.active_slot 被写成了别的号，返回新槽位，否则 None"""
+        try:
+            v = open(self.ACTIVE_FILE).read().strip()
+        except OSError:
+            return None
+        if v in ALL_SLOTS and v != self.active_slot and os.path.exists(os.path.join(VAULT_DIR, f"acc{v}.token")):
+            return v
+        return None
 
     def emails_changed(self):
         sig = tuple(os.path.getmtime(os.path.join(VAULT_DIR, f"acc{n}.token"))
@@ -300,6 +312,7 @@ class MultiAccountHUD:
                     json.dump(st, af, indent=2, ensure_ascii=False)
             except Exception:
                 pass
+        self.save_active_slot(slot)
         return True
 
     def sync_app_login(self, slot):
@@ -393,23 +406,15 @@ class MultiAccountHUD:
     def detect_current_slot(self):
         if os.path.exists(LOCK_FILE):
             return self.active_slot or "1"
+        # 不读独立 token 文件：借用轮换时它会变成被借的号（启动时恰好撞上轮换就会认错号，2026-10-26）
+        # 2. 检查钥匙串
         try:
             cmd = ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]
             cur = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             cur_email = self.extract_email_from_token(cur)
             if cur_email:
                 for slot in ALL_SLOTS:
-                    if self.account_emails.get(slot, "").lower() == cur_email:
-                        tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
-                        try:
-                            raw = cur.replace("go-keyring-base64:", "")
-                            data = json.loads(base64.b64decode(raw))
-                            data["id_token_email"] = cur_email
-                            updated = "go-keyring-base64:" + base64.b64encode(json.dumps(data).encode("utf-8")).decode("utf-8")
-                            with open(tpath, "w") as f:
-                                f.write(updated)
-                        except Exception:
-                            pass
+                    if self.account_emails.get(slot, "").lower() == cur_email.lower():
                         return slot
         except Exception:
             pass
@@ -544,7 +549,11 @@ class MultiAccountHUD:
             tier = self.tier_of(data) if has_token else None
             l_slot = tk.Label(row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
             l_slot.pack(side=tk.LEFT)
-            self.bind_drag(l_slot)
+            if has_token:
+                l_slot.configure(cursor="pointinghand")
+                l_slot.bind("<Button-1>", lambda e, s=slot: self.confirm_switch(s))
+            else:
+                self.bind_drag(l_slot)
 
             if not has_token:
                 btn_b = tk.Label(row, text="+ 点击绑定此账号", fg=COLOR_CYAN, bg=bg, font=("SF Pro Text", 8, "bold"), cursor="pointinghand")
@@ -608,7 +617,11 @@ class MultiAccountHUD:
 
             l_slot = tk.Label(header_row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Pro Display", 10, "bold"))
             l_slot.pack(side=tk.LEFT)
-            self.bind_drag(l_slot)
+            if has_token:
+                l_slot.configure(cursor="pointinghand")
+                l_slot.bind("<Button-1>", lambda e, s=slot: self.confirm_switch(s))
+            else:
+                self.bind_drag(l_slot)
             if tier:
                 tname = self.tier_name(data)
                 l_tier = tk.Label(header_row, text=tname,
@@ -847,26 +860,11 @@ class MultiAccountHUD:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def confirm_switch(self, slot, btn, txt, fg, bg):
-        """第一次点击只把按钮变成「确认?」，4 秒内在同一位置再点一次才真正切换"""
-        now = time.time()
-        pend = getattr(self, "_pending_switch", None)
-        if pend and pend[0] == slot and now - pend[1] < 4:
-            self._pending_switch = None
-            self.switch_to_slot(slot)
+    def confirm_switch(self, slot, btn=None, txt=None, fg=None, bg=None):
+        """点击槽位按钮直接切换"""
+        if slot == self.active_slot:
             return
-        self._pending_switch = (slot, now)
-        btn.configure(text="确认?", fg="#fbbf24", bg="#3b2a0a")
-
-        def revert():
-            cur = getattr(self, "_pending_switch", None)
-            if cur and cur[0] == slot and cur[1] == now:
-                self._pending_switch = None
-            try:
-                btn.configure(text=txt, fg=fg, bg=bg)
-            except Exception:
-                pass
-        self.root.after(4000, revert)
+        self.switch_to_slot(slot)
 
     def switch_to_slot(self, slot):
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
@@ -885,18 +883,15 @@ class MultiAccountHUD:
             try:
                 with self.keychain_lock:
                     self.apply_slot_credentials(slot)
-                    subprocess.run(["osascript", "-e", 'tell application "Antigravity" to quit'], check=False)
-                    time.sleep(0.9)
-                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
-                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
-                    time.sleep(0.5)
-                    self.apply_slot_credentials(slot)
-                    subprocess.run(["open", "-a", "Antigravity"], check=False)
-                    time.sleep(2.5)
+                    pids = subprocess.getoutput("pgrep -f Antigravity").strip().split()
+                    if pids and pids[0]:
+                        subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
+                        time.sleep(0.5)
+                        self.apply_slot_credentials(slot)
             finally:
                 self.switching_slot = False
                 self.root.after(0, self.setup_ui)
-                self.root.after(500, self.trigger_refresh)
+                self.root.after(300, self.trigger_refresh)
 
         threading.Thread(target=reload_app, daemon=True).start()
 
@@ -918,7 +913,7 @@ class MultiAccountHUD:
                     live_snapshot = self.adopt_live()
                     open(ROTATING_FILE, "w").close()
                 for s in ALL_SLOTS:
-                    if self.switching_slot or os.path.exists(LOCK_FILE):
+                    if self.switching_slot or os.path.exists(LOCK_FILE) or self.external_switch():
                         break
                     tok_path = os.path.join(VAULT_DIR, f"acc{s}.token")
                     if not os.path.exists(tok_path):
@@ -1015,6 +1010,12 @@ class MultiAccountHUD:
                 os.remove(ROTATING_FILE)
             except OSError:
                 pass
+            # 轮换途中用户在 CLI 切了号：以新号为准，不要用内存里的旧号覆盖回去
+            ext = self.external_switch()
+            if ext:
+                self.active_slot = ext
+            # 确保整轮借用拉取完毕后，凭据 100% 恢复为用户的活跃账号！
+            self.apply_slot_credentials(self.active_slot)
             self.last_fetch_ts = time.time()
             self.root.after(0, self.on_done)
 
@@ -1039,14 +1040,21 @@ class MultiAccountHUD:
         for lbl, rtime in getattr(self, "time_labels", []):
             lbl.configure(text=self.format_countdown(rtime))
 
-        # 每 2 秒廉价检查一次钥匙串，CLI/App 里切号后立刻跟随，不用等整轮刷新
+        # 检查并清理陈旧锁文件（>60s）
+        if os.path.exists(ROTATING_FILE):
+            try:
+                if time.time() - os.path.getmtime(ROTATING_FILE) > 60:
+                    os.remove(ROTATING_FILE)
+            except OSError:
+                pass
+
+        # 每 2 秒检查一次外部切号状态，实时跟随
         now = time.time()
         if (now - getattr(self, "_last_watch", 0) >= 2 and not self.is_fetching and not self.is_binding
                 and not self.switching_slot and not os.path.exists(ROTATING_FILE) and not os.path.exists(LOCK_FILE)):
             self._last_watch = now
             try:
                 self.adopt_live()
-                self.sync_app_login(self.active_slot)
             except Exception:
                 pass
 
