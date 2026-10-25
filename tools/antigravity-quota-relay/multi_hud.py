@@ -56,8 +56,8 @@ class MultiAccountHUD:
         # 折叠状态：默认如果账号数 >= 3 自动折叠，否则展开
         self.collapsed_mode = False
         
-        self.w_normal, self.h_normal = 370, 440
-        self.w_collapsed, self.h_collapsed = 370, 240
+        self.w_normal, self.h_normal = 312, 440
+        self.w_collapsed, self.h_collapsed = 312, 240
         
         screen_w = self.root.winfo_screenwidth()
         x = max(20, screen_w - self.w_normal - 25)
