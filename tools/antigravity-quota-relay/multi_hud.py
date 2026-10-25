@@ -8,7 +8,7 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 - 支持未绑定槽位点击直接调起无痕模式选择绑定
 """
 
-import sys, os, time, datetime, json, base64, subprocess, threading, glob, urllib.request
+import hashlib, sys, os, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
@@ -154,6 +154,87 @@ class MultiAccountHUD:
                 except Exception:
                     emails[slot] = ""
         return emails
+
+
+    @staticmethod
+    def _refresh_hash(blob):
+        try:
+            d = json.loads(base64.b64decode(blob.strip().replace("go-keyring-base64:", "")))
+            rt = d.get("token", {}).get("refresh_token", "")
+            return hashlib.sha1(rt.encode()).hexdigest() if rt else ""
+        except Exception:
+            return ""
+
+    def read_live_blob(self):
+        try:
+            return subprocess.check_output(
+                ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+                stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            return ""
+
+    def write_live_blob(self, blob):
+        """把一份完整凭据写回钥匙串和 CLI/standalone 令牌文件"""
+        subprocess.run(["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", blob],
+                       check=False, stderr=subprocess.DEVNULL)
+        try:
+            dec = base64.b64decode(blob.replace("go-keyring-base64:", "")).decode("utf-8")
+            for path in (STANDALONE_TOKEN_FILE, CLI_TOKEN_FILE):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(dec)
+        except Exception:
+            pass
+
+    def adopt_live(self):
+        """以钥匙串里正在用的凭据为准判定当前账号（异步跟随 CLI/App 里的登录、切换），
+        而不是把保险库推过去覆盖。返回需要在刷新结束后还原的快照。"""
+        live = self.read_live_blob()
+        if not live:
+            return ""
+        h = self._refresh_hash(live)
+        match = None
+        if h:
+            for slot in ["1", "2", "3", "4", "5"]:
+                try:
+                    with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
+                        if self._refresh_hash(f.read()) == h:
+                            match = slot
+                            break
+                except OSError:
+                    pass
+        if not match:
+            # 新登录/换了号：按邮箱找槽位
+            email = self.extract_email_from_token(live)
+            if email:
+                for slot, e in self.account_emails.items():
+                    if e.lower() == email:
+                        match = slot
+                        break
+        if match:
+            # 保险库里的令牌可能已落后于实际在用的（刷新过 access token），同步一份
+            try:
+                tpath = os.path.join(VAULT_DIR, f"acc{match}.token")
+                with open(tpath) as f:
+                    old = f.read().strip()
+                if old != live and self._refresh_hash(old) == h:
+                    with open(tpath, "w") as f:
+                        f.write(live)
+            except OSError:
+                pass
+            if match != self.active_slot:
+                self.active_slot = match
+                self.save_active_slot(match)
+                self.root.after(0, self.setup_ui)
+        return live
+
+    def emails_changed(self):
+        sig = tuple(os.path.getmtime(os.path.join(VAULT_DIR, f"acc{n}.token"))
+                    if os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) else 0 for n in "12345")
+        if getattr(self, "_mt_sig", sig) != sig:
+            self._mt_sig = sig
+            return True
+        self._mt_sig = sig
+        return False
 
     def apply_slot_credentials(self, slot):
         if os.path.exists(LOCK_FILE):
@@ -722,14 +803,17 @@ class MultiAccountHUD:
             return
         # 账号槽位增减（例如在终端里新绑定了账号）时自动重建界面，无需重启
         sig = tuple(os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) for n in "12345")
-        if getattr(self, "_tok_sig", sig) != sig:
+        if getattr(self, "_tok_sig", sig) != sig or self.emails_changed():
             self.account_emails = self.load_emails()
             self.root.after(0, self.setup_ui)
         self._tok_sig = sig
         self.is_fetching = True
 
         def worker():
+            live_snapshot = ""
             try:
+                with self.keychain_lock:
+                    live_snapshot = self.adopt_live()
                 for s in ["1", "2", "3", "4", "5"]:
                     if self.switching_slot or os.path.exists(LOCK_FILE):
                         break
@@ -817,7 +901,10 @@ class MultiAccountHUD:
                         except Exception:
                             pass
                         finally:
-                            self.apply_slot_credentials(self.active_slot)
+                            if live_snapshot:
+                                self.write_live_blob(live_snapshot)
+                            else:
+                                self.apply_slot_credentials(self.active_slot)
                 self.save_cache()
             except Exception:
                 pass
