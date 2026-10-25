@@ -35,10 +35,18 @@ COLOR_YELLOW = "#f59e0b"
 COLOR_RED = "#ef4444"
 COLOR_CYAN = "#06b6d4"
 COLOR_FULL = "#34d399"   # Pro（有 Argon 额度）
-COLOR_LITE = "#fb923c"   # Free（无 Argon、无 5h 额度）
-BORDER_LITE = "#5a3a1c"
+COLOR_LITE = "#94a3b8"   # Free（无 Argon、无 5h 额度）：灰
+BORDER_LITE = "#2c333f"
 COLOR_PLUS = "#38bdf8"   # Plus（无 Argon，但 Gemini 有 5h 额度）
 BORDER_PLUS = "#1c3d5a"
+BORDER_FULL = "#1d4a3a"
+# 每档整块卡片的色调：(底色, 底色-活跃, 边框, 边框-活跃)；活跃只略提亮，不抢文字
+TIER_PALETTE = {
+    "Pro":  ("#111c18", "#152620", BORDER_FULL, "#34d399"),
+    "Plus": ("#101a26", "#14222f", BORDER_PLUS, "#38bdf8"),
+    "Free": ("#151820", "#1a1e27", BORDER_LITE, "#94a3b8"),
+}
+
 
 TEXT_PRIMARY = "#f8fafc"
 TEXT_SECONDARY = "#94a3b8"
@@ -452,7 +460,7 @@ class MultiAccountHUD:
         bound = [x for x in slots if os.path.exists(os.path.join(VAULT_DIR, f"acc{x}.token"))]  # 未绑定的由占位卡片负责，不占按钮位
         chunks = [bound[i:i + PER_ROW] for i in range(0, len(bound), PER_ROW)]
         for ci in reversed(range(len(chunks))):  # side=BOTTOM 先 pack 的在最下面，所以倒着来
-            bar = tk.Frame(self.root, bg="#11141a", height=34, padx=6)
+            bar = tk.Frame(self.root, bg="#11141a", height=34, padx=4)
             bar.pack(fill=tk.X, side=tk.BOTTOM)
             bar.pack_propagate(False)
             self.bind_drag(bar)
@@ -468,8 +476,8 @@ class MultiAccountHUD:
                     txt = f"No.{slot}✓" if is_active else f"No.{slot}"
                 border = "#3b82f6" if is_active else BORDER_INACTIVE
 
-                btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=3, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
-                btn.pack(side=tk.LEFT, padx=2, pady=4)
+                btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=2, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
+                btn.pack(side=tk.LEFT, padx=1, pady=4)
                 btn.bind("<Button-1>", lambda e, s=slot, b=btn, t=txt, f=fg, bg0=bg: self.confirm_switch(s, b, t, f, bg0))
 
         self.root.after_idle(self.fit_height)
@@ -483,15 +491,14 @@ class MultiAccountHUD:
             data = self.account_data.get(slot, {})
             email = self.account_emails.get(slot, "")
 
-            bg = CARD_ACTIVE_BG if is_active else CARD_BG
-            border = BORDER_ACTIVE if is_active else BORDER_INACTIVE
+            bg, border, accent = self.card_colors(data, has_token, is_active)
 
             row = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=8, pady=3)
             row.pack(fill=tk.X, pady=2)
             self.bind_drag(row)
 
             tier = self.tier_of(data) if has_token else None
-            l_slot = tk.Label(row, text=f"{slot}号", fg=COLOR_LITE if tier == "lite" else (COLOR_GREEN if is_active else TEXT_PRIMARY), bg=bg, font=("SF Mono", 9, "bold"))
+            l_slot = tk.Label(row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
             l_slot.pack(side=tk.LEFT)
             self.bind_drag(l_slot)
 
@@ -544,12 +551,8 @@ class MultiAccountHUD:
             data = self.account_data.get(slot, {})
             email = self.account_emails.get(slot, "")
 
-            bg = CARD_ACTIVE_BG if is_active else CARD_BG
-            border = BORDER_ACTIVE if is_active else BORDER_INACTIVE
-            
+            bg, border, accent = self.card_colors(data, has_token, is_active)
             tier = self.tier_of(data) if has_token else None
-            if tier == "lite" and not is_active:
-                border = BORDER_PLUS if self.tier_name(data) == "Plus" else BORDER_LITE
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=7, pady=2)
             card.pack(fill=tk.X, pady=2)
             self.bind_drag(card)
@@ -559,7 +562,7 @@ class MultiAccountHUD:
             header_row.pack(fill=tk.X, pady=(0, 0))
             self.bind_drag(header_row)
 
-            l_slot = tk.Label(header_row, text=f"{slot}号", fg=(COLOR_PLUS if self.tier_name(data) == "Plus" else COLOR_LITE) if tier == "lite" else TEXT_PRIMARY, bg=bg, font=("SF Pro Display", 10, "bold"))
+            l_slot = tk.Label(header_row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Pro Display", 10, "bold"))
             l_slot.pack(side=tk.LEFT)
             self.bind_drag(l_slot)
             if tier:
@@ -589,7 +592,7 @@ class MultiAccountHUD:
                 self.bind_drag(l_mail)
 
             if is_active:
-                l_slot.configure(text=f"●{slot}号", fg=COLOR_GREEN)
+                l_slot.configure(text=f"▸{slot}号")
 
             c5h_pct = data.get("c5h_pct")
             c5h_reset = data.get("c5h_reset", "")
@@ -691,6 +694,15 @@ class MultiAccountHUD:
         if data.get("argon_pct") is not None:
             return "Pro"
         return "Plus" if data.get("g5h_pct") is not None else "Free"
+
+    def card_colors(self, data, has_token, is_active):
+        """按档位给整块卡片配色：返回 (底色, 边框, 主色)"""
+        if not has_token:
+            return CARD_BG, BORDER_INACTIVE, TEXT_PRIMARY
+        name = self.tier_name(data)
+        bg, bg_a, bd, bd_a = TIER_PALETTE.get(name, TIER_PALETTE["Free"])
+        accent = {"Pro": COLOR_FULL, "Plus": COLOR_PLUS}.get(name, COLOR_LITE)
+        return (bg_a if is_active else bg), (bd_a if is_active else bd), accent
 
     def has_claude(self, data):
         """是否显示/计入 Claude 额度：Pro 有；Plus（有 Gemini 5h）也有 Claude 额度（2026-10-25 用户确认）；Free 没有"""
