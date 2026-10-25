@@ -97,7 +97,7 @@ def format_token_blob(raw_str):
     return None
 
 existing_emails = {}
-for s in ["1", "2", "3", "4", "5"]:
+for s in [str(i) for i in range(1, 9)]:
     if s == str(slot):
         continue
     sp = os.path.join(VAULT_DIR, f"acc{s}.token")

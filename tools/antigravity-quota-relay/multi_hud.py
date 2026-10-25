@@ -11,6 +11,8 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 import hashlib, sys, os, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
+MAX_SLOTS = 8
+ALL_SLOTS = [str(i) for i in range(1, MAX_SLOTS + 1)]
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
 CACHE_FILE = os.path.expanduser("~/.gemini/account_vault/multi_quota_cache.json")
 CLI_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
@@ -83,14 +85,14 @@ class MultiAccountHUD:
         self.root.after(1000, self.tick)
 
     def get_available_slots(self):
-        """动态检测已配置的账号槽位，并追加一个待绑定的新槽位（最多支持 5 个号）"""
+        """动态检测已配置的账号槽位，并追加一个待绑定的新槽位（最多支持 8 个号）"""
         slots = []
-        for i in range(1, 6):
+        for i in range(1, MAX_SLOTS + 1):
             p = os.path.join(VAULT_DIR, f"acc{i}.token")
             if os.path.exists(p):
                 slots.append(str(i))
         next_slot = str(len(slots) + 1)
-        if int(next_slot) <= 5:
+        if int(next_slot) <= MAX_SLOTS:
             slots.append(next_slot)
         return slots or ["1", "2", "3"]
 
@@ -145,7 +147,7 @@ class MultiAccountHUD:
 
     def load_emails(self):
         emails = {}
-        for slot in ["1", "2", "3", "4", "5"]:
+        for slot in ALL_SLOTS:
             p = os.path.join(VAULT_DIR, f"acc{slot}.token")
             if os.path.exists(p):
                 try:
@@ -194,7 +196,7 @@ class MultiAccountHUD:
         h = self._refresh_hash(live)
         match = None
         if h:
-            for slot in ["1", "2", "3", "4", "5"]:
+            for slot in ALL_SLOTS:
                 try:
                     with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
                         if self._refresh_hash(f.read()) == h:
@@ -229,7 +231,7 @@ class MultiAccountHUD:
 
     def emails_changed(self):
         sig = tuple(os.path.getmtime(os.path.join(VAULT_DIR, f"acc{n}.token"))
-                    if os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) else 0 for n in "12345")
+                    if os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) else 0 for n in ALL_SLOTS)
         if getattr(self, "_mt_sig", sig) != sig:
             self._mt_sig = sig
             return True
@@ -297,11 +299,11 @@ class MultiAccountHUD:
     def update_geometry(self):
         slots = self.get_available_slots()
         if self.collapsed_mode:
-            h = 42 + (len(slots) * 34) + 48
+            h = 42 + (len(slots) * 34) + 48 + (34 if len(slots) > 7 else 0)
             w = 370
         else:
             # 展开模式：根据账号数量自适应高度
-            h = 42 + (len(slots) * 88) + 48
+            h = 42 + (len(slots) * 88) + 48 + (34 if len(slots) > 7 else 0)
             w = 370
         self.root.geometry(f"{w}x{h}")
 
@@ -317,7 +319,7 @@ class MultiAccountHUD:
         在轮换途中启动（或重启）会把轮换到的号误判成当前号，之后又被它「还原」覆盖用户真正在用的号。"""
         try:
             v = open(self.ACTIVE_FILE).read().strip()
-            return v if v in ("1", "2", "3", "4", "5") else None
+            return v if v in tuple(ALL_SLOTS) else None
         except OSError:
             return None
 
@@ -336,7 +338,7 @@ class MultiAccountHUD:
             cur = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             cur_email = self.extract_email_from_token(cur)
             if cur_email:
-                for slot in ["1", "2", "3", "4", "5"]:
+                for slot in ALL_SLOTS:
                     if self.account_emails.get(slot, "").lower() == cur_email:
                         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
                         try:
@@ -437,32 +439,30 @@ class MultiAccountHUD:
         else:
             self.render_expanded_cards(slots)
 
-        # 3. Bottom Switch Bar
-        bottom_bar = tk.Frame(self.root, bg="#11141a", height=40, padx=10)
-        bottom_bar.pack(fill=tk.X, side=tk.BOTTOM)
-        bottom_bar.pack_propagate(False)
-        self.bind_drag(bottom_bar)
+        # 3. Bottom Switch Bar（每行最多 4 个按钮，超出另起一行；点一次变「确认?」，再点一次才切换）
+        PER_ROW = 6
+        bound = [x for x in slots if os.path.exists(os.path.join(VAULT_DIR, f"acc{x}.token"))]  # 未绑定的由占位卡片负责，不占按钮位
+        chunks = [bound[i:i + PER_ROW] for i in range(0, len(bound), PER_ROW)]
+        for ci in reversed(range(len(chunks))):  # side=BOTTOM 先 pack 的在最下面，所以倒着来
+            bar = tk.Frame(self.root, bg="#11141a", height=34, padx=6)
+            bar.pack(fill=tk.X, side=tk.BOTTOM)
+            bar.pack_propagate(False)
+            self.bind_drag(bar)
+            for slot in chunks[ci]:
+                has_tok = os.path.exists(os.path.join(VAULT_DIR, f"acc{slot}.token"))
+                is_active = (slot == self.active_slot) and has_tok
+                bg = "#1e293b" if is_active else "#151922"
+                if not has_tok:
+                    fg = COLOR_CYAN
+                    txt = f"+No.{slot}"
+                else:
+                    fg = COLOR_GREEN if is_active else TEXT_SECONDARY
+                    txt = f"No.{slot}✓" if is_active else f"No.{slot}"
+                border = "#3b82f6" if is_active else BORDER_INACTIVE
 
-        lbl_switch = tk.Label(bottom_bar, text="切号接力", fg=TEXT_MUTED, bg="#11141a", font=("SF Pro Text", 9, "bold"))
-        lbl_switch.pack(side=tk.LEFT, padx=(0, 6), pady=8)
-        self.bind_drag(lbl_switch)
-
-        for slot in slots:
-            tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
-            has_tok = os.path.exists(tpath)
-            is_active = (slot == self.active_slot) and has_tok
-            bg = "#1e293b" if is_active else "#151922"
-            if not has_tok:
-                fg = COLOR_CYAN
-                txt = f"+ {slot}号"
-            else:
-                fg = COLOR_GREEN if is_active else TEXT_SECONDARY
-                txt = f"{slot}号 ✓" if is_active else f"{slot}号"
-            border = "#3b82f6" if is_active else BORDER_INACTIVE
-
-            btn = tk.Label(bottom_bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=10, pady=3, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
-            btn.pack(side=tk.LEFT, padx=3, pady=6)
-            btn.bind("<Button-1>", lambda e, s=slot: self.switch_to_slot(s))
+                btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=5, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
+                btn.pack(side=tk.LEFT, padx=2, pady=4)
+                btn.bind("<Button-1>", lambda e, s=slot, b=btn, t=txt, f=fg, bg0=bg: self.confirm_switch(s, b, t, f, bg0))
 
         self.root.after_idle(self.fit_height)
 
@@ -729,7 +729,7 @@ class MultiAccountHUD:
     def calc_recommend_slot(self):
         best_slot = None
         best_score = -999.0
-        for slot in ["1", "2", "3", "4", "5"]:
+        for slot in ALL_SLOTS:
             tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
             if not os.path.exists(tpath):
                 continue
@@ -765,6 +765,27 @@ class MultiAccountHUD:
                 self.root.after(100, self.trigger_refresh)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def confirm_switch(self, slot, btn, txt, fg, bg):
+        """第一次点击只把按钮变成「确认?」，4 秒内在同一位置再点一次才真正切换"""
+        now = time.time()
+        pend = getattr(self, "_pending_switch", None)
+        if pend and pend[0] == slot and now - pend[1] < 4:
+            self._pending_switch = None
+            self.switch_to_slot(slot)
+            return
+        self._pending_switch = (slot, now)
+        btn.configure(text="确认?", fg="#fbbf24", bg="#3b2a0a")
+
+        def revert():
+            cur = getattr(self, "_pending_switch", None)
+            if cur and cur[0] == slot and cur[1] == now:
+                self._pending_switch = None
+            try:
+                btn.configure(text=txt, fg=fg, bg=bg)
+            except Exception:
+                pass
+        self.root.after(4000, revert)
 
     def switch_to_slot(self, slot):
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
@@ -802,7 +823,7 @@ class MultiAccountHUD:
         if self.is_fetching or self.is_binding or self.switching_slot or os.path.exists(LOCK_FILE):
             return
         # 账号槽位增减（例如在终端里新绑定了账号）时自动重建界面，无需重启
-        sig = tuple(os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) for n in "12345")
+        sig = tuple(os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")) for n in ALL_SLOTS)
         if getattr(self, "_tok_sig", sig) != sig or self.emails_changed():
             self.account_emails = self.load_emails()
             self.root.after(0, self.setup_ui)
@@ -814,7 +835,7 @@ class MultiAccountHUD:
             try:
                 with self.keychain_lock:
                     live_snapshot = self.adopt_live()
-                for s in ["1", "2", "3", "4", "5"]:
+                for s in ALL_SLOTS:
                     if self.switching_slot or os.path.exists(LOCK_FILE):
                         break
                     tok_path = os.path.join(VAULT_DIR, f"acc{s}.token")
@@ -931,7 +952,7 @@ class MultiAccountHUD:
     def tick(self):
         for lbl, rtime in getattr(self, "time_labels", []):
             lbl.configure(text=self.format_countdown(rtime))
-            
+
         if not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
             
