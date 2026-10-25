@@ -131,6 +131,41 @@ for _s in [str(i) for i in range(1, 9)]:
         except Exception:
             pass
 
+DEBUG_LOG = os.path.join(VAULT_DIR, "login_debug.log")
+def dbg(msg):
+    try:
+        with open(DEBUG_LOG, "a") as _f:
+            _f.write(time.strftime("%H:%M:%S ") + msg + "\n")
+    except Exception:
+        pass
+
+def find_new_credential():
+    """钥匙串 / CLI 令牌文件里只要出现一个保险库里没有的账号凭据，就是刚授权成功的"""
+    cands = []
+    try:
+        kc = subprocess.check_output(["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+                                     stderr=subprocess.DEVNULL).decode("utf-8", "ignore").strip()
+        if kc:
+            cands.append(("keychain", kc))
+    except Exception as e:
+        dbg(f"keychain read failed: {type(e).__name__}")
+    for _name, _path in (("standalone", os.path.expanduser("~/.gemini/jetski-standalone-oauth-token")),
+                         ("cli", os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token"))):
+        try:
+            if os.path.exists(_path):
+                with open(_path, "r", encoding="utf-8") as _f:
+                    _d = json.load(_f)
+                if _d.get("token") or _d.get("id_token_email"):
+                    cands.append((_name, "go-keyring-base64:" + base64.b64encode(json.dumps(_d).encode("utf-8")).decode("utf-8")))
+        except Exception as e:
+            dbg(f"{_name} read failed: {type(e).__name__}")
+    for _name, _blob in cands:
+        _fp = refresh_fp(_blob)
+        dbg(f"candidate {_name}: fp={_fp[:8] if _fp else None} known={_fp in known_fps}")
+        if _fp and _fp not in known_fps:
+            return _blob
+    return None
+
 clipboard_token = None
 try:
     cb = subprocess.check_output(["pbpaste"]).decode("utf-8", errors="ignore").strip()
@@ -253,6 +288,11 @@ if not token_to_save:
             print("🚀 正在向 Google 申请官方授权链接...", flush=True)
 
             for attempt in range(1 if choice == "1" else 8):
+                if attempt > 0:
+                    token_to_save = find_new_credential()
+                    if token_to_save:
+                        print("✅ 上一次授权其实已成功，直接使用这份凭据。", flush=True)
+                        break
                 if os.path.exists(CAPTURED_URL_FILE):
                     try: os.remove(CAPTURED_URL_FILE)
                     except Exception: pass
@@ -345,7 +385,7 @@ if not token_to_save:
                 # 轮询获取新 Token
                 import select
                 _gone = 0
-                pasted_once = False   # 手动模式：用户粘贴过 code 之前，不接受任何凭据（后台程序可能写回旧账号凭据）
+                pasted_once = False   # 注意：agy 会自己从终端读 code，脚本未必读得到这一行，所以不能以「粘贴过」作为接收凭据的前提；已有账号靠令牌指纹排除
                 _deadline = time.time() + wait_secs
                 for _ in iter(lambda: time.time() < _deadline, False):
                     if choice == "2" and select.select([sys.stdin], [], [], 0)[0]:
@@ -353,34 +393,12 @@ if not token_to_save:
                         if pasted:
                             pasted_once = True
                             relay_callback(pasted)
-                    if choice == "2" and not pasted_once:
-                        time.sleep(0.5)
-                        continue
-                    # 检查钥匙串
-                    try:
-                        new_token = subprocess.check_output(
-                            ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
-                            stderr=subprocess.DEVNULL
-                        ).decode().strip()
-                        if new_token and new_token != cur_token and refresh_fp(new_token) not in known_fps:
-                            token_to_save = new_token
-                            break
-                    except Exception:
-                        pass
-
-                    # 检查独立 token 文件
-                    if os.path.exists(f1):
-                        try:
-                            with open(f1, "r", encoding="utf-8") as sf:
-                                sdata = json.load(sf)
-                            if sdata.get("token") or sdata.get("id_token_email"):
-                                sb64 = base64.b64encode(json.dumps(sdata).encode("utf-8")).decode("utf-8")
-                                cand = "go-keyring-base64:" + sb64
-                                if refresh_fp(cand) not in known_fps:
-                                    token_to_save = cand
-                                    break
-                        except Exception:
-                            pass
+                    # 检查钥匙串与令牌文件里有没有新账号的凭据
+                    _found = find_new_credential()
+                    if _found:
+                        dbg("new credential found, saving")
+                        token_to_save = _found
+                        break
 
                     time.sleep(1.0)
                     if proc.poll() is not None and token_to_save:
@@ -394,9 +412,22 @@ if not token_to_save:
                     proc.terminate()
                 except Exception:
                     pass
+                if not token_to_save and choice == "2":
+                    time.sleep(1.5)
+                    token_to_save = find_new_credential()
+                    dbg(f"final check after loop: {bool(token_to_save)}")
                 if token_to_save or choice == "1":
                     break
-                print("\n🔄 这条链接已过期（agy 只等 60 秒），正在生成新链接，请改用下面这一条...\n", flush=True)
+                _why = ""
+                try:
+                    _errs = [l for l in open(os.path.join(VAULT_DIR, "login_agy.log")).read().splitlines() if l.startswith("Error:")]
+                    _why = _errs[-1][:140] if _errs else ""
+                except Exception:
+                    pass
+                if _why:
+                    print(f"\n❌ agy 报错：{_why}\n   （code 无效、已用过或已超过 60 秒）正在生成新链接，请改用下面这一条...\n", flush=True)
+                else:
+                    print("\n🔄 这条链接已过期（agy 只等 60 秒），正在生成新链接，请改用下面这一条...\n", flush=True)
 
         finally:
             restore_env()
