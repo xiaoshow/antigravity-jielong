@@ -72,7 +72,7 @@ class MultiAccountHUD:
         self.last_fetch_ts = 0
         
         self.account_emails = self.load_emails()
-        self.active_slot = self.detect_current_slot()
+        self.active_slot = self.load_active_slot() or self.detect_current_slot()
         self.active_model_group = self.detect_active_model_group()
         self.account_data = {}
         
@@ -228,6 +228,24 @@ class MultiAccountHUD:
         widget.bind("<ButtonPress-1>", self.on_press)
         widget.bind("<B1-Motion>", self.on_motion)
         widget.bind("<ButtonRelease-1>", self.on_release)
+
+    ACTIVE_FILE = os.path.join(os.path.expanduser("~/.gemini/account_vault"), ".active_slot")
+
+    def load_active_slot(self):
+        """用户上一次明确选择/绑定的号。优先于钥匙串检测：每轮拉额度会临时轮换钥匙串里的凭据，
+        在轮换途中启动（或重启）会把轮换到的号误判成当前号，之后又被它「还原」覆盖用户真正在用的号。"""
+        try:
+            v = open(self.ACTIVE_FILE).read().strip()
+            return v if v in ("1", "2", "3", "4", "5") else None
+        except OSError:
+            return None
+
+    def save_active_slot(self, slot):
+        try:
+            with open(self.ACTIVE_FILE, "w") as f:
+                f.write(str(slot))
+        except OSError:
+            pass
 
     def detect_current_slot(self):
         if os.path.exists(LOCK_FILE):
@@ -652,6 +670,7 @@ class MultiAccountHUD:
                     subprocess.run(["python3", script_path, str(slot)], check=False)
                     self.account_emails = self.load_emails()
                     self.active_slot = slot
+                    self.save_active_slot(slot)
                     self.apply_slot_credentials(slot)
             except Exception:
                 pass
@@ -671,6 +690,7 @@ class MultiAccountHUD:
             return
 
         self.active_slot = slot
+        self.save_active_slot(slot)
         self.switching_slot = True
         self.setup_ui()
 
