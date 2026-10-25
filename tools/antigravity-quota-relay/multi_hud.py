@@ -230,15 +230,24 @@ class MultiAccountHUD:
                         match = slot
                         break
         if match:
-            # 保险库里的令牌可能已落后于实际在用的（刷新过 access token），同步一份
+            # 实际在用的凭据比保险库新（刷新了 access token，或重新登录换了 refresh token）：写回保险库，并保留缓存的邮箱
             try:
                 tpath = os.path.join(VAULT_DIR, f"acc{match}.token")
                 with open(tpath) as f:
                     old = f.read().strip()
-                if old != live and self._refresh_hash(old) == h:
+                if old != live:
+                    new_d = json.loads(base64.b64decode(live.replace("go-keyring-base64:", "")))
+                    try:
+                        old_d = json.loads(base64.b64decode(old.replace("go-keyring-base64:", "")))
+                    except Exception:
+                        old_d = {}
+                    em = new_d.get("id_token_email") or old_d.get("id_token_email") or self.account_emails.get(match, "")
+                    if em:
+                        new_d["id_token_email"] = em
                     with open(tpath, "w") as f:
-                        f.write(live)
-            except OSError:
+                        f.write("go-keyring-base64:" + base64.b64encode(json.dumps(new_d).encode("utf-8")).decode("utf-8"))
+                    self.account_emails[match] = em
+            except (OSError, ValueError):
                 pass
             if match != self.active_slot:
                 self.active_slot = match
