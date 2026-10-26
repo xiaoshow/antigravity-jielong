@@ -377,6 +377,7 @@ class MultiAccountHUD:
         widget.bind("<ButtonPress-1>", self.on_press)
         widget.bind("<B1-Motion>", self.on_motion)
         widget.bind("<ButtonRelease-1>", self.on_release)
+        widget.bind("<Double-Button-1>", lambda e: self.root.after(0, self.toggle_collapse))   # 双击空白处切换折叠/展开
 
     ACTIVE_FILE = os.path.join(os.path.expanduser("~/.gemini/account_vault"), ".active_slot")
 
@@ -580,30 +581,33 @@ class MultiAccountHUD:
 
             # 一行里 5h 和 1w 都显示：Pro（有 Argon）两行 = C 行 + G 行；其余一行只有 G（没有 5h 额度的 Free 只显示周）
             def q_line(parent, name, segs):
+                """固定列宽：C 行和 G 行的 5h / 1w 上下对齐；缺 5h 的号留空占位"""
                 f = tk.Frame(parent, bg=bg)
                 if parent is row:
                     f.pack(side=tk.LEFT, fill=tk.X, expand=True)
                 else:
                     f.pack(fill=tk.X)
                 self.bind_drag(f)
-                tk.Label(f, text=name, fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                for lab, pct, reset in segs:
-                    if reset == "DISABLED":
-                        txt = "周耗"
-                    else:
-                        txt = "  --" if pct is None else f"{pct:3.0f}%"
-                    tk.Label(f, text=lab, fg=self._th["muted"], bg=bg, font=("SF Mono", 7)).pack(side=tk.LEFT, padx=(4, 0))
-                    tk.Label(f, text=txt, fg=self.pct_color(pct), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                def lbl(text, w, fg, font, anchor="w", padx=0):
+                    l = tk.Label(f, text=text, width=w, anchor=anchor, fg=fg, bg=bg, font=font)
+                    l.pack(side=tk.LEFT, padx=padx)
+                    self.bind_drag(l)
+                    return l
+                lbl(name, 2, self._th["muted"], ("SF Mono", 8), padx=(6, 0))
+                for seg in segs:
+                    if seg is None:
+                        lbl("", 15, self._th["muted"], ("SF Mono", 8))
+                        continue
+                    lab, pct, reset = seg
+                    txt = "周耗" if reset == "DISABLED" else ("--" if pct is None else f"{pct:.0f}%")
+                    lbl(lab, 2, self._th["muted"], ("SF Mono", 7))
+                    lbl(txt, 4, self.pct_color(pct), ("SF Mono", 8, "bold"), anchor="e")
+                    t = lbl("" if (not reset or reset == "DISABLED") else self.format_countdown(reset), 5, self._th["muted"], ("SF Mono", 7), padx=(2, 4))
                     if reset and reset != "DISABLED":
-                        t = tk.Label(f, text=self.format_countdown(reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 7))
-                        t.pack(side=tk.LEFT, padx=(1, 0))
-                        self.bind_drag(t)
                         self.time_labels.append((t, reset))
 
-            g_segs = []
-            if data.get("g5h_pct") is not None:
-                g_segs.append(("5h", data.get("g5h_pct"), data.get("g5h_reset")))
-            g_segs.append(("1w", data.get("gwk_pct"), data.get("gwk_reset")))
+            g_segs = [("5h", data.get("g5h_pct"), data.get("g5h_reset")) if data.get("g5h_pct") is not None else None,
+                      ("1w", data.get("gwk_pct"), data.get("gwk_reset"))]
             if tier == "full":
                 q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
                 q_line(card, "G", g_segs)
