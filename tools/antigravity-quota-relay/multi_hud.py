@@ -276,7 +276,18 @@ class MultiAccountHUD:
         self._mt_sig = sig
         return False
 
+    def trace_write(self, what, slot):
+        """谁在改活跃号：记录调用栈，排查凭据被改回的问题"""
+        try:
+            import traceback
+            stack = " < ".join(f"{f.name}:{f.lineno}" for f in traceback.extract_stack()[-5:-1][::-1])
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud.log"), "a") as lf:
+                lf.write(f"{time.strftime('%m-%d %H:%M:%S')} {what} slot={slot} via {stack}\n")
+        except Exception:
+            pass
+
     def apply_slot_credentials(self, slot):
+        self.trace_write("apply_creds", slot)
         if os.path.exists(LOCK_FILE):
             return False
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
@@ -397,6 +408,7 @@ class MultiAccountHUD:
         self.setup_ui()
 
     def save_active_slot(self, slot):
+        self.trace_write("save_active", slot)
         try:
             with open(self.ACTIVE_FILE, "w") as f:
                 f.write(str(slot))
