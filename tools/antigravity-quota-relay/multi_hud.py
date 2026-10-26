@@ -66,7 +66,7 @@ class MultiAccountHUD:
         self.collapsed_mode = False
         
         self.w_normal, self.h_normal = 276, 440
-        self.w_collapsed, self.h_collapsed = 348, 240
+        self.w_collapsed, self.h_collapsed = 276, 240
         
         screen_w = self.root.winfo_screenwidth()
         x = max(20, screen_w - self.w_normal - 25)
@@ -393,7 +393,7 @@ class MultiAccountHUD:
         slots = self.get_available_slots()
         if self.collapsed_mode:
             h = 42 + (len(slots) * 34) + 48 + (34 if len(slots) > 7 else 0)
-            w = 348   # 折叠视图 Pro 号第一行多了 Argon，要宽一点
+            w = 276
         else:
             # 展开模式：根据账号数量自适应高度
             h = 42 + (len(slots) * 74) + 48 + (34 if len(slots) > 7 else 0)
@@ -646,9 +646,9 @@ class MultiAccountHUD:
                       ("1w", data.get("gwk_pct"), data.get("gwk_reset"))]
             lines.pack(side=tk.LEFT, fill=tk.X, expand=True)
             if tier == "full":
-                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset")),
-                                  ("Arg", data.get("argon_pct"), data.get("argon_reset"))])
+                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
                 q_line(row, "G", g_segs)
+                q_line(row, "A", [("", data.get("argon_pct"), data.get("argon_reset"))])   # Pro：第三行 Argon
             else:
                 q_line(row, "G", g_segs)
 
