@@ -377,7 +377,6 @@ class MultiAccountHUD:
         widget.bind("<ButtonPress-1>", self.on_press)
         widget.bind("<B1-Motion>", self.on_motion)
         widget.bind("<ButtonRelease-1>", self.on_release)
-        widget.bind("<Double-Button-1>", lambda e: self.root.after(0, self.toggle_collapse))   # 双击空白处切换折叠/展开
 
     ACTIVE_FILE = os.path.join(os.path.expanduser("~/.gemini/account_vault"), ".active_slot")
 
@@ -448,7 +447,19 @@ class MultiAccountHUD:
         except Exception:
             pass
 
+    def on_double_click(self, event):
+        """双击任意位置切换折叠/展开；带手型光标的可点控件（X号标签、No.X 按钮、⟳、视图开关）除外，免得和「点两下确认切号」冲突"""
+        try:
+            if str(event.widget.cget("cursor")) == "pointinghand":
+                return
+        except Exception:
+            pass
+        self.root.after(0, self.toggle_collapse)
+
     def setup_ui(self):
+        if not getattr(self, "_dbl_bound", False):
+            self.root.bind_all("<Double-Button-1>", self.on_double_click)
+            self._dbl_bound = True
         for widget in self.root.winfo_children():
             widget.destroy()
 
@@ -560,9 +571,10 @@ class MultiAccountHUD:
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=8, pady=3)
             card.pack(fill=tk.X, pady=2)
             self.bind_drag(card)
-            row = tk.Frame(card, bg=bg)   # 第一行；Pro 在 card 里再加第二行
+            row = tk.Frame(card, bg=bg)   # 左边是「X号」，右边 lines 里放 C / G 两行，纵向左对齐
             row.pack(fill=tk.X)
             self.bind_drag(row)
+            lines = tk.Frame(row, bg=bg)
 
             tier = self.tier_of(data) if has_token else None
             l_slot = tk.Label(row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
@@ -582,18 +594,15 @@ class MultiAccountHUD:
             # 一行里 5h 和 1w 都显示：Pro（有 Argon）两行 = C 行 + G 行；其余一行只有 G（没有 5h 额度的 Free 只显示周）
             def q_line(parent, name, segs):
                 """固定列宽：C 行和 G 行的 5h / 1w 上下对齐；缺 5h 的号留空占位"""
-                f = tk.Frame(parent, bg=bg)
-                if parent is row:
-                    f.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                else:
-                    f.pack(fill=tk.X)
+                f = tk.Frame(lines, bg=bg)
+                f.pack(fill=tk.X)
                 self.bind_drag(f)
                 def lbl(text, w, fg, font, anchor="w", padx=0):
                     l = tk.Label(f, text=text, width=w, anchor=anchor, fg=fg, bg=bg, font=font)
                     l.pack(side=tk.LEFT, padx=padx)
                     self.bind_drag(l)
                     return l
-                lbl(name, 2, self._th["muted"], ("SF Mono", 8), padx=(6, 0))
+                lbl(name, 2, self._th["muted"], ("SF Mono", 8), padx=(2, 0))
                 for seg in segs:
                     if seg is None:
                         lbl("", 15, self._th["muted"], ("SF Mono", 8))
@@ -608,9 +617,10 @@ class MultiAccountHUD:
 
             g_segs = [("5h", data.get("g5h_pct"), data.get("g5h_reset")) if data.get("g5h_pct") is not None else None,
                       ("1w", data.get("gwk_pct"), data.get("gwk_reset"))]
+            lines.pack(side=tk.LEFT, fill=tk.X, expand=True)
             if tier == "full":
                 q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
-                q_line(card, "G", g_segs)
+                q_line(row, "G", g_segs)
             else:
                 q_line(row, "G", g_segs)
 
