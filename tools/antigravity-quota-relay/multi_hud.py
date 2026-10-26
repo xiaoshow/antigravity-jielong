@@ -556,8 +556,11 @@ class MultiAccountHUD:
 
             bg, border, accent = self.card_colors(data, has_token, is_active)
 
-            row = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=8, pady=3)
-            row.pack(fill=tk.X, pady=2)
+            card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=8, pady=3)
+            card.pack(fill=tk.X, pady=2)
+            self.bind_drag(card)
+            row = tk.Frame(card, bg=bg)   # 第一行；Pro 在 card 里再加第二行
+            row.pack(fill=tk.X)
             self.bind_drag(row)
 
             tier = self.tier_of(data) if has_token else None
@@ -575,39 +578,30 @@ class MultiAccountHUD:
                 btn_b.bind("<Button-1>", lambda e, s=slot: self.bind_new_slot(s))
                 continue
 
-            # 简写 C-5h（Pro / Plus 显示）
-            if self.has_claude(data):
-                c5 = data.get("c5h_pct")
-                c5_col = self.pct_color(c5)
-                tk.Label(row, text="C:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                c5_text = "周耗" if data.get("c5h_reset") == "DISABLED" else ("  --" if c5 is None else f"{c5:4.0f}%")
-                tk.Label(row, text=c5_text, fg=c5_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+            # 只看 Gemini（G）用量：Pro（有 Argon）两行 = G 5h + G 周；其余一行（有 5h 显示 5h，没有就显示周）
+            def g_line(parent, label, pct, reset):
+                f = tk.Frame(parent, bg=bg)
+                if parent is row:
+                    f.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                else:
+                    f.pack(fill=tk.X)
+                self.bind_drag(f)
+                tk.Label(f, text=label, fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                tk.Label(f, text="  --" if pct is None else f"{pct:4.0f}%", fg=self.pct_color(pct), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                if reset:
+                    t = tk.Label(f, text=self.format_countdown(reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
+                    t.pack(side=tk.RIGHT)
+                    self.bind_drag(t)
+                    self.time_labels.append((t, reset))
 
-            # 简写 G-5h
-            g5 = data.get("g5h_pct")
-            if g5 is not None:
-                tk.Label(row, text="G:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(row, text=f"{g5:4.0f}%", fg=self.pct_color(g5), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            else:   # 没有 5 小时额度（Free）：折叠行显示周额度
-                gw = data.get("gwk_pct")
-                tk.Label(row, text="G周:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(row, text="  --" if gw is None else f"{gw:4.0f}%", fg=self.pct_color(gw), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-
-            # 简写 Argon
-            arg = data.get("argon_pct")
-            arg_reset = data.get("argon_reset", "")
-            arg_col = self.pct_color(arg)
-            if arg is not None:
-                tk.Label(row, text="Arg:", fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(row, text=f"{arg:4.0f}%", fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-
-            # 倒计时: 有 Argon 优先显示 Argon 倒计时；无 Argon 显示 G-Wk / C-Wk 周倒计时
-            main_reset = arg_reset or data.get("gwk_reset") or data.get("cwk_reset")
-            if main_reset:
-                t_cnt = tk.Label(row, text=self.format_countdown(main_reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-                t_cnt.pack(side=tk.RIGHT)
-                self.bind_drag(t_cnt)
-                self.time_labels.append((t_cnt, main_reset))
+            g5, gw = data.get("g5h_pct"), data.get("gwk_pct")
+            if tier == "full":
+                g_line(row, "G5h:", g5, data.get("g5h_reset"))
+                g_line(card, "G周:", gw, data.get("gwk_reset"))
+            elif g5 is not None:
+                g_line(row, "G5h:", g5, data.get("g5h_reset"))
+            else:
+                g_line(row, "G周:", gw, data.get("gwk_reset"))
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
