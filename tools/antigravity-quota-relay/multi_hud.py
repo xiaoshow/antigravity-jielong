@@ -508,6 +508,7 @@ class MultiAccountHUD:
         PER_ROW = 6
         bound = [x for x in slots if os.path.exists(os.path.join(VAULT_DIR, f"acc{x}.token"))]  # 未绑定的由占位卡片负责，不占按钮位
         chunks = [bound[i:i + PER_ROW] for i in range(0, len(bound), PER_ROW)]
+        self._slot_btns = {}
         for ci in reversed(range(len(chunks))):  # side=BOTTOM 先 pack 的在最下面，所以倒着来
             bar = tk.Frame(self.root, bg="#11141a", height=34, padx=4)
             bar.pack(fill=tk.X, side=tk.BOTTOM)
@@ -527,6 +528,7 @@ class MultiAccountHUD:
 
                 btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=2, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
                 btn.pack(side=tk.LEFT, padx=1, pady=4)
+                self._slot_btns[slot] = (btn, txt, fg, bg)
                 btn.bind("<Button-1>", lambda e, s=slot, b=btn, t=txt, f=fg, bg0=bg: self.confirm_switch(s, b, t, f, bg0))
 
         self.root.after_idle(self.fit_height)
@@ -861,10 +863,32 @@ class MultiAccountHUD:
         threading.Thread(target=worker, daemon=True).start()
 
     def confirm_switch(self, slot, btn=None, txt=None, fg=None, bg=None):
-        """点击槽位按钮直接切换"""
+        """第一次点击只把底部按钮变成「确认?」，4 秒内在同一位置再点一次才真正切换。
+        点卡片上的「N号」也走这里，借用该号底部按钮显示「确认?」（2026-10-26 恢复：曾被改成点一下直接切）"""
         if slot == self.active_slot:
             return
-        self.switch_to_slot(slot)
+        if btn is None:
+            btn, txt, fg, bg = getattr(self, "_slot_btns", {}).get(slot, (None, None, None, None))
+        now = time.time()
+        pend = getattr(self, "_pending_switch", None)
+        if pend and pend[0] == slot and now - pend[1] < 4:
+            self._pending_switch = None
+            self.switch_to_slot(slot)
+            return
+        self._pending_switch = (slot, now)
+        if btn is not None:
+            btn.configure(text="确认?", fg="#fbbf24", bg="#3b2a0a")
+
+        def revert():
+            cur = getattr(self, "_pending_switch", None)
+            if cur and cur[0] == slot and cur[1] == now:
+                self._pending_switch = None
+            try:
+                if btn is not None:
+                    btn.configure(text=txt, fg=fg, bg=bg)
+            except Exception:
+                pass
+        self.root.after(4000, revert)
 
     def switch_to_slot(self, slot):
         tpath = os.path.join(VAULT_DIR, f"acc{slot}.token")
