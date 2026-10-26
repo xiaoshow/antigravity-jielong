@@ -937,6 +937,17 @@ class MultiAccountHUD:
                             os.chmod(os.path.join(probe_cli, "antigravity-oauth-token"), 0o600)
                             cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
                             probe_env = dict(os.environ, HOME=probe_home)
+                            # agy 优先读钥匙串：隔离 HOME 的钥匙串里也要换成本槽位的凭据，否则会沿用上一个号（2026-10-26 实测：4-7 号全显示成 3 号）
+                            probe_kc = os.path.join(probe_home, "Library", "Keychains", "login.keychain-db")
+                            if not os.path.exists(probe_kc):
+                                os.makedirs(os.path.dirname(probe_kc), mode=0o700, exist_ok=True)
+                                subprocess.run(["security", "create-keychain", "-p", "", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
+                                subprocess.run(["security", "set-keychain-settings", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
+                                subprocess.run(["security", "default-keychain", "-d", "user", "-s", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
+                                subprocess.run(["security", "list-keychains", "-d", "user", "-s", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
+                            subprocess.run(["security", "unlock-keychain", "-p", "", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
+                            subprocess.run(["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
+                                           env=probe_env, check=True, stderr=subprocess.DEVNULL)
                             res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=probe_env)
                             if res.returncode == 0:
                                 d = json.loads(res.stdout)
