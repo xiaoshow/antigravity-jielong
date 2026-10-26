@@ -8,7 +8,7 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 - 支持未绑定槽位点击直接调起无痕模式选择绑定
 """
 
-import hashlib, sys, os, time, datetime, json, base64, subprocess, threading, glob, urllib.request
+import hashlib, sys, os, re, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
 MAX_SLOTS = 8
@@ -66,7 +66,7 @@ class MultiAccountHUD:
         self.collapsed_mode = False
         
         self.w_normal, self.h_normal = 276, 440
-        self.w_collapsed, self.h_collapsed = 276, 240
+        self.w_collapsed, self.h_collapsed = 348, 240
         
         screen_w = self.root.winfo_screenwidth()
         x = max(20, screen_w - self.w_normal - 25)
@@ -204,6 +204,28 @@ class MultiAccountHUD:
         except Exception:
             pass
 
+    def recent_agy_refresh(self, within=900):
+        """终端里常驻的 agy 会话每小时刷新一次令牌，并把它内存里那个号的凭据写回钥匙串（2026-10-26 实测：整点后 20-45 秒钥匙串变回 1 号）。
+        刚刷新过就说明钥匙串的变化是回写，不是用户切号。"""
+        try:
+            logs = glob.glob(os.path.expanduser("~/.gemini/antigravity-cli/log/cli-*.log"))
+            if not logs:
+                return False
+            with open(max(logs, key=os.path.getmtime), "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 60000))
+                lines = [l for l in f.read().decode("utf-8", "ignore").splitlines() if "token refreshed" in l]
+            if not lines:
+                return False
+            m = re.match(r"I(\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})", lines[-1])
+            if not m:
+                return False
+            mo, dd, hh, mi, ss = map(int, m.groups())
+            ts = datetime.datetime(datetime.datetime.now().year, mo, dd, hh, mi, ss).timestamp()
+            return 0 <= time.time() - ts <= within
+        except Exception:
+            return False
+
     def adopt_live(self):
         """以系统中实际生效的凭据/状态为准判定当前账号（异步跟随 CLI / 桌面 App / 钥匙串），
         返回当前活跃账号的凭据快照。"""
@@ -242,6 +264,11 @@ class MultiAccountHUD:
                             match = slot
                             break
 
+        if match and match != self.active_slot and not os.path.exists(os.path.join(VAULT_DIR, ".rotating")) and self.recent_agy_refresh():
+            # 钥匙串在 agy 刷新令牌后变了、.active_slot 没动：是 agy 回写，不是切号——把当前号的凭据写回去
+            self.trace_write(f"guard_restore(live={match})", self.active_slot)
+            self.apply_slot_credentials(self.active_slot)
+            match = None
         if match and match != self.active_slot:
             self.active_slot = match
             self.save_active_slot(match)
@@ -366,7 +393,7 @@ class MultiAccountHUD:
         slots = self.get_available_slots()
         if self.collapsed_mode:
             h = 42 + (len(slots) * 34) + 48 + (34 if len(slots) > 7 else 0)
-            w = 276
+            w = 348   # 折叠视图 Pro 号第一行多了 Argon，要宽一点
         else:
             # 展开模式：根据账号数量自适应高度
             h = 42 + (len(slots) * 74) + 48 + (34 if len(slots) > 7 else 0)
@@ -609,7 +636,7 @@ class MultiAccountHUD:
                         continue
                     lab, pct, reset = seg
                     txt = "周耗" if reset == "DISABLED" else ("--" if pct is None else f"{pct:.0f}%")
-                    lbl(lab, 2, self._th["muted"], ("SF Mono", 7))
+                    lbl(lab, max(2, len(lab)), self._th["muted"], ("SF Mono", 7))
                     lbl(txt, 4, self.pct_color(pct), ("SF Mono", 8, "bold"), anchor="e")
                     t = lbl("" if (not reset or reset == "DISABLED") else self.format_countdown(reset), 5, self._th["muted"], ("SF Mono", 7), padx=(2, 4))
                     if reset and reset != "DISABLED":
@@ -619,7 +646,8 @@ class MultiAccountHUD:
                       ("1w", data.get("gwk_pct"), data.get("gwk_reset"))]
             lines.pack(side=tk.LEFT, fill=tk.X, expand=True)
             if tier == "full":
-                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
+                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset")),
+                                  ("Arg", data.get("argon_pct"), data.get("argon_reset"))])
                 q_line(row, "G", g_segs)
             else:
                 q_line(row, "G", g_segs)
