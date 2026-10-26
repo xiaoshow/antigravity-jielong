@@ -911,9 +911,8 @@ class MultiAccountHUD:
             try:
                 with self.keychain_lock:
                     live_snapshot = self.adopt_live()
-                    open(ROTATING_FILE, "w").close()
                 for s in ALL_SLOTS:
-                    if self.switching_slot or os.path.exists(LOCK_FILE) or self.external_switch():
+                    if self.switching_slot or os.path.exists(LOCK_FILE):
                         break
                     tok_path = os.path.join(VAULT_DIR, f"acc{s}.token")
                     if not os.path.exists(tok_path):
@@ -927,23 +926,18 @@ class MultiAccountHUD:
                             if not slot_token:
                                 continue
 
-                            # 同步更新 standalone 与 cli token，确保 agy 真实拉取该槽位
-                            try:
-                                raw_tok = slot_token.replace("go-keyring-base64:", "")
-                                dec_tok = base64.b64decode(raw_tok).decode("utf-8")
-                                with open(STANDALONE_TOKEN_FILE, "w", encoding="utf-8") as sf:
-                                    sf.write(dec_tok)
-                                with open(CLI_TOKEN_FILE, "w", encoding="utf-8") as cf:
-                                    cf.write(dec_tok)
-                            except Exception:
-                                pass
-
-                            subprocess.run(
-                                ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
-                                check=True, stderr=subprocess.DEVNULL
-                            )
+                            # 在隔离的 HOME 里查该槽位额度：agy 读 HOME 下的凭据文件，不碰真实钥匙串、
+                            # 客户端凭据文件和 app_storage，所以刷新期间 CLI/App 始终停在用户选的号（2026-10-26）
+                            probe_home = os.path.join(VAULT_DIR, ".probe_home")
+                            probe_cli = os.path.join(probe_home, ".gemini", "antigravity-cli")
+                            os.makedirs(probe_cli, mode=0o700, exist_ok=True)
+                            dec_tok = base64.b64decode(slot_token.replace("go-keyring-base64:", "")).decode("utf-8")
+                            with open(os.path.join(probe_cli, "antigravity-oauth-token"), "w", encoding="utf-8") as pf:
+                                pf.write(dec_tok)
+                            os.chmod(os.path.join(probe_cli, "antigravity-oauth-token"), 0o600)
                             cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
-                            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                            probe_env = dict(os.environ, HOME=probe_home)
+                            res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=probe_env)
                             if res.returncode == 0:
                                 d = json.loads(res.stdout)
                                 groups = d.get("command", {}).get("data", {}).get("groups", [])
@@ -998,11 +992,6 @@ class MultiAccountHUD:
                                 self.account_data[s] = slot_dict
                         except Exception:
                             pass
-                        finally:
-                            if live_snapshot:
-                                self.write_live_blob(live_snapshot)
-                            else:
-                                self.apply_slot_credentials(self.active_slot)
                 self.save_cache()
             except Exception:
                 pass
@@ -1010,12 +999,10 @@ class MultiAccountHUD:
                 os.remove(ROTATING_FILE)
             except OSError:
                 pass
-            # 轮换途中用户在 CLI 切了号：以新号为准，不要用内存里的旧号覆盖回去
+            # 额度现在在隔离 HOME 里查，真实凭据整轮没动过；只需采纳期间用户在 CLI 切的号（不再写钥匙串）
             ext = self.external_switch()
             if ext:
                 self.active_slot = ext
-            # 确保整轮借用拉取完毕后，凭据 100% 恢复为用户的活跃账号！
-            self.apply_slot_credentials(self.active_slot)
             self.last_fetch_ts = time.time()
             self.root.after(0, self.on_done)
 
