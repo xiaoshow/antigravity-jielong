@@ -578,30 +578,37 @@ class MultiAccountHUD:
                 btn_b.bind("<Button-1>", lambda e, s=slot: self.bind_new_slot(s))
                 continue
 
-            # 只看 Gemini（G）用量：Pro（有 Argon）两行 = G 5h + G 周；其余一行（有 5h 显示 5h，没有就显示周）
-            def g_line(parent, label, pct, reset):
+            # 一行里 5h 和 1w 都显示：Pro（有 Argon）两行 = C 行 + G 行；其余一行只有 G（没有 5h 额度的 Free 只显示周）
+            def q_line(parent, name, segs):
                 f = tk.Frame(parent, bg=bg)
                 if parent is row:
                     f.pack(side=tk.LEFT, fill=tk.X, expand=True)
                 else:
                     f.pack(fill=tk.X)
                 self.bind_drag(f)
-                tk.Label(f, text=label, fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
-                tk.Label(f, text="  --" if pct is None else f"{pct:4.0f}%", fg=self.pct_color(pct), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-                if reset:
-                    t = tk.Label(f, text=self.format_countdown(reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-                    t.pack(side=tk.RIGHT)
-                    self.bind_drag(t)
-                    self.time_labels.append((t, reset))
+                tk.Label(f, text=name, fg=self._th["muted"], bg=bg, font=("SF Mono", 8)).pack(side=tk.LEFT, padx=(6, 1))
+                for lab, pct, reset in segs:
+                    if reset == "DISABLED":
+                        txt = "周耗"
+                    else:
+                        txt = "  --" if pct is None else f"{pct:3.0f}%"
+                    tk.Label(f, text=lab, fg=self._th["muted"], bg=bg, font=("SF Mono", 7)).pack(side=tk.LEFT, padx=(4, 0))
+                    tk.Label(f, text=txt, fg=self.pct_color(pct), bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
+                    if reset and reset != "DISABLED":
+                        t = tk.Label(f, text=self.format_countdown(reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 7))
+                        t.pack(side=tk.LEFT, padx=(1, 0))
+                        self.bind_drag(t)
+                        self.time_labels.append((t, reset))
 
-            g5, gw = data.get("g5h_pct"), data.get("gwk_pct")
+            g_segs = []
+            if data.get("g5h_pct") is not None:
+                g_segs.append(("5h", data.get("g5h_pct"), data.get("g5h_reset")))
+            g_segs.append(("1w", data.get("gwk_pct"), data.get("gwk_reset")))
             if tier == "full":
-                g_line(row, "G5h:", g5, data.get("g5h_reset"))
-                g_line(card, "G周:", gw, data.get("gwk_reset"))
-            elif g5 is not None:
-                g_line(row, "G5h:", g5, data.get("g5h_reset"))
+                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
+                q_line(card, "G", g_segs)
             else:
-                g_line(row, "G周:", gw, data.get("gwk_reset"))
+                q_line(row, "G", g_segs)
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
