@@ -97,7 +97,7 @@ def format_token_blob(raw_str):
     return None
 
 existing_emails = {}
-for s in [str(i) for i in range(1, 9)]:
+for s in [str(i) for i in range(1, 13)]:
     if s == str(slot):
         continue
     sp = os.path.join(VAULT_DIR, f"acc{s}.token")
@@ -120,7 +120,7 @@ def refresh_fp(blob):
         return ""
 
 known_fps = set()
-for _s in [str(i) for i in range(1, 9)]:
+for _s in [str(i) for i in range(1, 13)]:
     _p = os.path.join(VAULT_DIR, f"acc{_s}.token")
     if os.path.exists(_p):
         try:

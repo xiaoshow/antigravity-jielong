@@ -21,7 +21,14 @@ if not os.path.exists(token_file):
 with open(token_file, "r", encoding="utf-8") as f:
     raw_token = f.read().strip()
 
-# 1. 提取邮箱
+# 1. 提取邮箱并记录当前活跃槽位
+active_file = os.path.join(vault_dir, ".active_slot")
+try:
+    with open(active_file, "w", encoding="utf-8") as af:
+        af.write(str(slot))
+except Exception:
+    pass
+
 email = ""
 try:
     b64 = raw_token.replace("go-keyring-base64:", "")

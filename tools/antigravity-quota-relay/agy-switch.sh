@@ -21,6 +21,7 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 
 apply_creds() {
+    echo "$SLOT" > "$VAULT_DIR/.active_slot"
     RAW=$(cat "$TOKEN_FILE")
     security add-generic-password -U -s "gemini" -a "antigravity" -w "$RAW"
     python3 -c "

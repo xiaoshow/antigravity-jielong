@@ -11,7 +11,7 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 import hashlib, sys, os, re, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
-MAX_SLOTS = 8
+MAX_SLOTS = 12
 ROTATING_FILE = os.path.expanduser("~/.gemini/account_vault/.rotating")
 ALL_SLOTS = [str(i) for i in range(1, MAX_SLOTS + 1)]
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
@@ -34,6 +34,8 @@ COLOR_GREEN = "#10b981"
 COLOR_YELLOW = "#f59e0b"
 COLOR_RED = "#ef4444"
 COLOR_CYAN = "#06b6d4"
+# 模型各自的企业色：Claude 陶土橙、GPT(OpenAI) 绿、Argon(Google) 蓝
+BRAND_COLORS = {"Claude": "#d97757", "GPT": "#10a37f", "Argon": "#4285f4"}
 COLOR_FULL = "#34d399"   # Pro（有 Argon 额度）
 COLOR_LITE = "#94a3b8"   # Free（无 Argon、无 5h 额度）：灰
 BORDER_LITE = "#2c333f"
@@ -54,24 +56,32 @@ TEXT_SECONDARY = "#94a3b8"
 TEXT_MUTED = "#64748b"
 
 class MultiAccountHUD:
-    def __init__(self, root):
+    def __init__(self, root, parent=None):
         self.root = root
-        self.root.title("⚡ Antigravity 接龙 HUD")
+        self.parent = parent
+        self.is_standalone = (parent is None)
+        self.container = parent if parent is not None else root
         
-        self.root.attributes("-topmost", True)
-        self.root.resizable(False, False)
-        self.root.configure(bg=BG_COLOR)
-        
-        # 折叠状态：默认如果账号数 >= 3 自动折叠，否则展开
-        self.collapsed_mode = False
-        
-        self.w_normal, self.h_normal = 276, 440
-        self.w_collapsed, self.h_collapsed = 276, 240
-        
-        screen_w = self.root.winfo_screenwidth()
-        x = max(20, screen_w - self.w_normal - 25)
-        y = 65
-        self.root.geometry(f"{self.w_normal}x{self.h_normal}+{x}+{y}")
+        if self.is_standalone:
+            self.root.title("⚡ Antigravity 接龙 HUD")
+            self.root.attributes("-topmost", True)
+            self.root.resizable(False, False)
+            self.root.configure(bg=BG_COLOR)
+            
+            # 折叠状态：默认如果账号数 >= 3 自动折叠，否则展开
+            self.collapsed_mode = False
+            
+            self.w_normal, self.h_normal = 276, 440
+            self.w_collapsed, self.h_collapsed = 276, 240
+            
+            screen_w = self.root.winfo_screenwidth()
+            x = max(20, screen_w - self.w_normal - 25)
+            y = 65
+            self.root.geometry(f"{self.w_normal}x{self.h_normal}+{x}+{y}")
+        else:
+            self.collapsed_mode = False
+            self.w_normal, self.h_normal = 276, 440
+            self.w_collapsed, self.h_collapsed = 276, 240
         
         self.drag_start_x = 0
         self.drag_start_y = 0
@@ -398,7 +408,10 @@ class MultiAccountHUD:
             # 展开模式：根据账号数量自适应高度
             h = 42 + (len(slots) * 74) + 48 + (34 if len(slots) > 7 else 0)
             w = 276
-        self.root.geometry(f"{w}x{h}")
+        if getattr(self, "on_resize", None) and callable(self.on_resize):
+            self.on_resize(h)
+        elif getattr(self, "is_standalone", True):
+            self.root.geometry(f"{w}x{h}")
 
     def bind_drag(self, widget):
         widget.bind("<ButtonPress-1>", self.on_press)
@@ -484,18 +497,31 @@ class MultiAccountHUD:
         self.root.after(0, self.toggle_collapse)
 
     def setup_ui(self):
-        if not getattr(self, "_dbl_bound", False):
+        target = self.container
+        if self.is_standalone and not getattr(self, "_dbl_bound", False):
             self.root.bind_all("<Double-Button-1>", self.on_double_click)
             self._dbl_bound = True
-        for widget in self.root.winfo_children():
+        for widget in target.winfo_children():
             widget.destroy()
 
         self.time_labels = []
         self.active_model_group = self.detect_active_model_group()
         slots = self.get_available_slots()
 
+        if getattr(self, "sort_g_week", False):
+            def weekly_key(slot):
+                reset = self.account_data.get(slot, {}).get("gwk_reset")
+                bound = os.path.exists(os.path.join(VAULT_DIR, f"acc{slot}.token"))
+                try:
+                    target = datetime.datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                    seconds = max(0, target.timestamp() - time.time())
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    seconds = float("inf")
+                return (not bound, seconds, int(slot))
+            slots = sorted(slots, key=weekly_key)
+
         # 1. Header
-        header = tk.Frame(self.root, bg="#11141a", height=34, padx=10)
+        header = tk.Frame(target, bg="#11141a", height=34, padx=10)
         header.pack(fill=tk.X, side=tk.TOP)
         header.pack_propagate(False)
         self.bind_drag(header)
@@ -545,8 +571,17 @@ class MultiAccountHUD:
         btn_ref.bind("<Enter>", lambda e: btn_ref.configure(fg=COLOR_CYAN))
         btn_ref.bind("<Leave>", lambda e: btn_ref.configure(fg=TEXT_MUTED))
 
+        sort_bar = tk.Frame(target, bg="#11141a", padx=10)
+        sort_bar.pack(fill=tk.X)
+        sort_btn = tk.Label(sort_bar, text="G 周复位 ↑ ✓" if getattr(self, "sort_g_week", False) else "G 周复位 ↑", fg=COLOR_CYAN if getattr(self, "sort_g_week", False) else TEXT_MUTED, bg="#11141a", font=("SF Mono", 9, "bold"), cursor="pointinghand")
+        sort_btn.pack(side=tk.RIGHT, pady=(0, 4))
+        def toggle_week_sort(event=None):
+            self.sort_g_week = not getattr(self, "sort_g_week", False)
+            self.setup_ui()
+        sort_btn.bind("<Button-1>", toggle_week_sort)
+
         # 2. Body
-        self.body = tk.Frame(self.root, bg=BG_COLOR, padx=8, pady=4)
+        self.body = tk.Frame(target, bg=BG_COLOR, padx=8, pady=4)
         self.body.pack(fill=tk.BOTH, expand=True)
         self.bind_drag(self.body)
 
@@ -561,7 +596,7 @@ class MultiAccountHUD:
         chunks = [bound[i:i + PER_ROW] for i in range(0, len(bound), PER_ROW)]
         self._slot_btns = {}
         for ci in reversed(range(len(chunks))):  # side=BOTTOM 先 pack 的在最下面，所以倒着来
-            bar = tk.Frame(self.root, bg="#11141a", height=34, padx=4)
+            bar = tk.Frame(target, bg="#11141a", height=34, padx=4)
             bar.pack(fill=tk.X, side=tk.BOTTOM)
             bar.pack_propagate(False)
             self.bind_drag(bar)
@@ -629,7 +664,7 @@ class MultiAccountHUD:
                     l.pack(side=tk.LEFT, padx=padx)
                     self.bind_drag(l)
                     return l
-                lbl(name, 2, self._th["muted"], ("SF Mono", 8), padx=(2, 0))
+                lbl(name, 6, BRAND_COLORS.get(name, self._th["muted"]), ("SF Mono", 8, "bold"), padx=(2, 0))
                 for seg in segs:
                     if seg is None:
                         lbl("", 15, self._th["muted"], ("SF Mono", 8))
@@ -642,15 +677,15 @@ class MultiAccountHUD:
                     if reset and reset != "DISABLED":
                         self.time_labels.append((t, reset))
 
-            g_segs = [("5h", data.get("g5h_pct"), data.get("g5h_reset")) if data.get("g5h_pct") is not None else None,
-                      ("1w", data.get("gwk_pct"), data.get("gwk_reset"))]
+            g_segs = [("1w", data.get("gwk_pct"), data.get("gwk_reset")),
+                      ("5h", data.get("g5h_pct"), data.get("g5h_reset")) if data.get("g5h_pct") is not None else None]
             lines.pack(side=tk.LEFT, fill=tk.X, expand=True)
             if tier == "full":
-                q_line(row, "C", [("5h", data.get("c5h_pct"), data.get("c5h_reset")), ("1w", data.get("cwk_pct"), data.get("cwk_reset"))])
-                q_line(row, "G", g_segs)
-                q_line(row, "A", [("", data.get("argon_pct"), data.get("argon_reset"))])   # Pro：第三行 Argon
+                q_line(row, "Claude", [("1w", data.get("cwk_pct"), data.get("cwk_reset")), ("5h", data.get("c5h_pct"), data.get("c5h_reset"))])
+                q_line(row, "GPT", g_segs)
+                q_line(row, "Argon", [("", data.get("argon_pct"), data.get("argon_reset"))])   # Pro：第三行 Argon
             else:
-                q_line(row, "G", g_segs)
+                q_line(row, "GPT", g_segs)
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
@@ -729,85 +764,35 @@ class MultiAccountHUD:
             argon_pct = data.get("argon_pct")
             argon_reset = data.get("argon_reset", "")
 
-            # 2. Claude 行（仅满血账号显示，残血账号隐藏）
+            # 2~4. 三行用同一套固定列：模型全名（企业色） | 5h 段 | Wk 段；Argon 按周复位，落在 Wk 列、5h 列留空
+            def exp_row(name, seg5, segwk, none_txt="--"):
+                f = tk.Frame(card, bg=bg, pady=1)
+                f.pack(fill=tk.X)
+                self.bind_drag(f)
+                def lbl(text, w, fg, font, anchor="w", padx=0):
+                    l = tk.Label(f, text=text, width=w, anchor=anchor, fg=fg, bg=bg, font=font)
+                    l.pack(side=tk.LEFT, padx=padx)
+                    self.bind_drag(l)
+                    return l
+                lbl(name, 6, BRAND_COLORS.get(name, self._th["label"]), ("SF Mono", 8, "bold"))
+                for lab, seg in (("Wk", segwk), ("5h", seg5)):   # 左周右5h：只有周额度的 Argon 自然落在左列
+                    if seg is None:   # 占位：和有数据的段用完全相同的三个控件和间距，Wk 列才能上下对齐
+                        lbl("", 2, self._th["label"], ("SF Mono", 8, "bold"))
+                        lbl("", 4, self._th["muted"], ("SF Mono", 8, "bold"), padx=(3, 3))
+                        lbl("", 5, self._th["muted"], ("SF Mono", 8), padx=(0, 12))
+                        continue
+                    pct, reset = seg
+                    lbl(lab, 2, self._th["label"], ("SF Mono", 8, "bold"))
+                    lbl(none_txt if pct is None else f"{pct:.0f}%", 4, self.pct_color(pct) if pct is not None else self._th["muted"], ("SF Mono", 8, "bold"), anchor="e", padx=(3, 3))
+                    t = lbl("--" if not reset else self.format_countdown(reset), 5, self._th["muted"], ("SF Mono", 8), padx=(0, 12))
+                    if reset:
+                        self.time_labels.append((t, reset))
+
             if self.has_claude(data) and (cwk_pct is not None or c5h_pct is not None):
-                c_row = tk.Frame(card, bg=bg, pady=1)
-                c_row.pack(fill=tk.X)
-                self.bind_drag(c_row)
-
-                if c5h_pct is not None:
-                    c5h_col = self.pct_color(c5h_pct)
-                    c5h_txt = f"{c5h_pct:3.0f}%"
-                    tk.Label(c_row, text="C-5h", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-                    tk.Label(c_row, text=c5h_txt, fg=c5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-                    
-                    t1_txt = self.format_countdown(c5h_reset)
-                    t1 = tk.Label(c_row, text=t1_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-                    t1.pack(side=tk.LEFT, padx=(0, 10))
-                    self.bind_drag(t1)
-                    if c5h_reset:
-                        self.time_labels.append((t1, c5h_reset))
-
-                cwk_col = self.pct_color(cwk_pct)
-                if cwk_pct is None:
-                    cwk_txt = "未开通"
-                    cwk_col = self._th["muted"]
-                else:
-                    cwk_txt = f"{cwk_pct:3.0f}%"
-                tk.Label(c_row, text="C-Wk", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-                tk.Label(c_row, text=cwk_txt, fg=cwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-                t2_txt = "--" if not cwk_reset else self.format_countdown(cwk_reset)
-                t2 = tk.Label(c_row, text=t2_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-                t2.pack(side=tk.LEFT)
-                self.bind_drag(t2)
-                if cwk_reset:
-                    self.time_labels.append((t2, cwk_reset))
-
-            # 3. Gemini 行（残血账号仅保留此行：G-5h 与 G-Wk，2号和4号结构完全一致）
-            g_row = tk.Frame(card, bg=bg, pady=1)
-            g_row.pack(fill=tk.X)
-            self.bind_drag(g_row)
-
-            if g5h_pct is not None:  # 没有 5 小时额度的账号（Free）不显示 G-5h
-                g5h_col = self.pct_color(g5h_pct)
-                g5h_txt = f"{g5h_pct:3.0f}%"
-                tk.Label(g_row, text="G-5h", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-                tk.Label(g_row, text=g5h_txt, fg=g5h_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-
-                t_g5_txt = "--" if not g5h_reset else self.format_countdown(g5h_reset)
-                t_g5 = tk.Label(g_row, text=t_g5_txt, fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-                t_g5.pack(side=tk.LEFT, padx=(0, 10))
-                self.bind_drag(t_g5)
-                if g5h_reset:
-                    self.time_labels.append((t_g5, g5h_reset))
-
-            gwk_col = self.pct_color(gwk_pct)
-            gwk_txt = "  --" if gwk_pct is None else f"{gwk_pct:3.0f}%"
-            tk.Label(g_row, text="G-Wk", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-            tk.Label(g_row, text=gwk_txt, fg=gwk_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 3))
-            t_gwk = tk.Label(g_row, text=self.format_countdown(gwk_reset), fg=self._th["muted"], bg=bg, font=("SF Mono", 8))
-            t_gwk.pack(side=tk.LEFT)
-            self.bind_drag(t_gwk)
-            self.time_labels.append((t_gwk, gwk_reset))
-
-            # 4. Argon
+                exp_row("Claude", (c5h_pct, c5h_reset) if c5h_pct is not None else None, (cwk_pct, cwk_reset), none_txt="未开通")
+            exp_row("GPT", (g5h_pct, g5h_reset) if g5h_pct is not None else None, (gwk_pct, gwk_reset))
             if argon_pct is not None:  # 不支持 Argon 的账号不显示该行
-                arg_row = tk.Frame(card, bg=bg, pady=1)
-                arg_row.pack(fill=tk.X)
-                self.bind_drag(arg_row)
-
-                arg_col = self.pct_color(argon_pct)
-                arg_txt = "不支持" if argon_pct is None else f"{argon_pct:3.0f}%"
-                tk.Label(arg_row, text="Argon", fg=self._th["label"], bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT)
-                tk.Label(arg_row, text=arg_txt, fg=arg_col, bg=bg, font=("SF Mono", 8, "bold")).pack(side=tk.LEFT, padx=(3, 14))
-
-                tk.Label(arg_row, text="复位:", fg=self._th["muted"], bg=bg, font=("SF Pro Text", 8)).pack(side=tk.LEFT)
-                t_arg_txt = "--" if argon_pct is None else self.format_countdown(argon_reset)
-                t_arg = tk.Label(arg_row, text=t_arg_txt, fg=self._th["hi"] if (argon_pct and argon_pct < 20) else self._th["muted"], bg=bg, font=("SF Mono", 8, "bold"))
-                t_arg.pack(side=tk.LEFT, padx=(2, 0))
-                self.bind_drag(t_arg)
-                if argon_pct is not None:
-                    self.time_labels.append((t_arg, argon_reset))
+                exp_row("Argon", None, (argon_pct, argon_reset))
 
     def tier_name(self, data):
         """Pro=有 Argon（1/3号）；Plus=无 Argon 但 Gemini 有 5h 复位（4号）；Free=只有 Gemini 周额度（2号）；无数据返回 None"""
@@ -1104,6 +1089,8 @@ class MultiAccountHUD:
 
     def fit_height(self):
         """按内容实际高度撑开窗口，避免账号变多时底部被截断"""
+        if not getattr(self, "is_standalone", True):
+            return
         try:
             self.root.update_idletasks()
             h = self.root.winfo_reqheight()
