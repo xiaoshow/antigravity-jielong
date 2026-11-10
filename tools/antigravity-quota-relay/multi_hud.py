@@ -11,7 +11,7 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 import hashlib, sys, os, re, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
-MAX_SLOTS = 12
+MAX_SLOTS = 20
 ROTATING_FILE = os.path.expanduser("~/.gemini/account_vault/.rotating")
 ALL_SLOTS = [str(i) for i in range(1, MAX_SLOTS + 1)]
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")
@@ -56,7 +56,8 @@ TEXT_SECONDARY = "#94a3b8"
 TEXT_MUTED = "#64748b"
 
 class MultiAccountHUD:
-    def __init__(self, root, parent=None):
+    def __init__(self, root, parent=None, read_only=False):
+        self.read_only = read_only
         self.root = root
         self.parent = parent
         self.is_standalone = (parent is None)
@@ -108,7 +109,8 @@ class MultiAccountHUD:
         self.load_cache()
         self.setup_ui()
         
-        self.trigger_refresh()
+        if not self.read_only:
+            self.trigger_refresh()
         self.root.after(1000, self.tick)
 
     def get_available_slots(self):
@@ -567,7 +569,7 @@ class MultiAccountHUD:
 
         btn_ref = tk.Label(header, text="⟳", fg=TEXT_MUTED, bg="#11141a", font=("SF Mono", 12, "bold"), cursor="pointinghand")
         btn_ref.pack(side=tk.RIGHT, pady=4)
-        btn_ref.bind("<Button-1>", lambda e: self.trigger_refresh())
+        btn_ref.bind("<Button-1>", lambda e: (self.load_cache(), self.setup_ui()) if self.read_only else self.trigger_refresh())
         btn_ref.bind("<Enter>", lambda e: btn_ref.configure(fg=COLOR_CYAN))
         btn_ref.bind("<Leave>", lambda e: btn_ref.configure(fg=TEXT_MUTED))
 
@@ -998,9 +1000,14 @@ class MultiAccountHUD:
                             dec_tok = base64.b64decode(slot_token.replace("go-keyring-base64:", "")).decode("utf-8")
                             with open(os.path.join(probe_cli, "antigravity-oauth-token"), "w", encoding="utf-8") as pf:
                                 pf.write(dec_tok)
+                            with open(os.path.join(probe_cli, "jetski-standalone-oauth-token"), "w", encoding="utf-8") as pf:
+                                pf.write(dec_tok)
                             os.chmod(os.path.join(probe_cli, "antigravity-oauth-token"), 0o600)
                             cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
                             probe_env = dict(os.environ, HOME=probe_home)
+                            probe_env["BROWSER"] = "/usr/bin/true"
+                            probe_env["DESKTOP_SESSION"] = ""
+                            probe_env["DISPLAY"] = ""
                             # agy 优先读钥匙串：隔离 HOME 的钥匙串里也要换成本槽位的凭据，否则会沿用上一个号（2026-10-26 实测：4-7 号全显示成 3 号）
                             probe_kc = os.path.join(probe_home, "Library", "Keychains", "login.keychain-db")
                             if not os.path.exists(probe_kc):
@@ -1122,8 +1129,20 @@ class MultiAccountHUD:
             except Exception:
                 pass
 
-        if not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
+        if not self.read_only and not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
+        elif self.read_only:
+            # 只读模式：缓存文件变了才重读并重画（以前只重读不重画，屏幕上一直是启动时的旧数字，2026-11-10）
+            try:
+                mt = os.path.getmtime(CACHE_FILE)
+            except OSError:
+                mt = 0
+            if mt != getattr(self, "_cache_mtime", None):
+                first = not hasattr(self, "_cache_mtime")
+                self._cache_mtime = mt
+                self.load_cache()
+                if not first:
+                    self.setup_ui()
             
         self.root.after(1000, self.tick)
 
