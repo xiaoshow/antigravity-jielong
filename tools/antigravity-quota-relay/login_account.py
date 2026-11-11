@@ -493,23 +493,24 @@ if token_to_save:
     print(f"💾 存储文件: {target_path}", flush=True)
     print("==================================================", flush=True)
     # 绑定后立刻查一次额度，按档位报出显示编号（P=Pro，S=其余），并让面板重画
-    print("⏳ 正在查询这个号的额度和档位…", flush=True)
-    probe_out = ""
-    try:
-        probe_out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "refresh_quota.py"), str(slot)],
-                                   capture_output=True, text=True, timeout=90).stdout
-    except Exception as e:
-        probe_out = f"探测出错: {e}"
     cache_path = os.path.join(VAULT_DIR, "multi_quota_cache.json")
-    try:
-        cache = json.load(open(cache_path))
-    except Exception:
-        cache = {}
-    p_n = s_n = 0
-    name = tier = None
-    n = 1
-    while n <= 20:
-        if os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")):
+
+    def probe_and_name():
+        """查一次本槽位额度，返回 (显示编号, 档位, 探测输出)"""
+        try:
+            out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "refresh_quota.py"), str(slot)],
+                                 capture_output=True, text=True, timeout=90).stdout
+        except Exception as e:
+            out = f"探测出错: {e}"
+        try:
+            cache = json.load(open(cache_path))
+        except Exception:
+            cache = {}
+        p_n = s_n = 0
+        name = tier = None
+        for n in range(1, 21):
+            if not os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")):
+                continue
             d = cache.get(str(n)) or {}
             is_pro = d.get("argon_pct") is not None
             if is_pro: p_n += 1
@@ -517,18 +518,37 @@ if token_to_save:
             if str(n) == str(slot):
                 name = f"P{p_n}" if is_pro else f"S{s_n}"
                 tier = "Pro" if is_pro else ("Plus" if d.get("g5h_pct") is not None else ("Free" if d else "档位未知"))
-        n += 1
-    try:
-        os.utime(cache_path, None)   # 面板看缓存文件时间变了就重画
-    except OSError:
-        pass
+        try:
+            os.utime(cache_path, None)   # 面板看缓存文件时间变了就重画
+        except OSError:
+            pass
+        return name, tier, out
+
+    print("⏳ 正在查询这个号的额度和档位…", flush=True)
+    name, tier, probe_out = probe_and_name()
+    # 没通过 Antigravity 资格验证：直接给出验证链接，等用户在浏览器里做完再重查
+    while "NOT_ELIGIBLE" in probe_out:
+        vf = os.path.join(VAULT_DIR, f".verify_url_{slot}")
+        url = open(vf).read().strip() if os.path.exists(vf) else ""
+        print("", flush=True)
+        print("⚠️ 这个号还没通过 Antigravity 资格验证，查不到额度。", flush=True)
+        print("   用登录了这个号的浏览器打开下面的链接完成验证（链接只对这个号有效）：", flush=True)
+        print(f"\n{url}\n", flush=True)
+        try:
+            ans = input("👉 验证完按回车重查；输入 o 回车在本机浏览器打开链接；输入 s 回车先跳过: ").strip().lower()
+        except EOFError:
+            ans = "s"
+        if ans == "s":
+            break
+        if ans == "o" and url:
+            subprocess.run(["/usr/bin/open", url], check=False)
+            continue
+        print("⏳ 重新查询…", flush=True)
+        name, tier, probe_out = probe_and_name()
     print(f"🏷  编号: {name}（{tier}）", flush=True)
     if "NOT_ELIGIBLE" in probe_out:
-        print("⚠️ 这个号还没通过 Antigravity 资格验证，查不到额度，暂时排在 S 组。", flush=True)
-        vf = os.path.join(VAULT_DIR, f".verify_url_{slot}")
-        if os.path.exists(vf):
-            print(f"   在浏览器里完成验证后再刷新：open \"$(cat {vf})\"", flush=True)
-    elif not (cache.get(str(slot)) or {}):
+        print("   还没验证，暂时排在 S 组；验证后重跑 python3 refresh_quota.py " + str(slot) + " 即可。", flush=True)
+    elif tier == "档位未知":
         print(f"⚠️ 额度没查到，暂时排在 S 组。{probe_out.strip()[-160:]}", flush=True)
     print("👉 面板已刷新。", flush=True)
 else:
