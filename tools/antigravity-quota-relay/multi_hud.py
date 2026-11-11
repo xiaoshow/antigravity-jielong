@@ -1294,6 +1294,7 @@ class MultiAccountHUD:
                 first = not hasattr(self, "_cache_mtime")
                 self._cache_mtime = mt
                 self.load_cache()
+                self.account_emails = self.load_emails()   # 新绑定的号要带上邮箱
                 if not first:
                     self.setup_ui()
             
