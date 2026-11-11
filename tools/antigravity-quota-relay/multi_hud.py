@@ -439,14 +439,33 @@ class MultiAccountHUD:
         except OSError:
             return set()
 
+    def save_folded(self, folded):
+        try:
+            with open(self.FOLD_FILE, "w") as f:
+                f.write(" ".join(sorted(folded, key=int)))
+        except OSError:
+            pass
+
     def toggle_fold(self, slot):
         folded = self.load_folded()
         folded.symmetric_difference_update({slot})
-        try:
-            with open(self.FOLD_FILE, "w") as f:
-                f.write(" ".join(sorted(folded)))
-        except OSError:
-            pass
+        self.save_folded(folded)
+        self.setup_ui()
+
+    def nonpro_slots(self):
+        """已绑定且档位不是 Pro 的号（Plus / Free）；还没拉到额度数据的号不算"""
+        return [s for s in ALL_SLOTS if os.path.exists(os.path.join(VAULT_DIR, f"acc{s}.token"))
+                and self.tier_name(self.account_data.get(s, {})) in ("Plus", "Free")]
+
+    def toggle_fold_nonpro(self):
+        """非 Pro 的号全都收起了就全部展开，否则全部收起"""
+        nonpro = set(self.nonpro_slots())
+        if not nonpro:
+            return
+        folded = self.load_folded()
+        folded = (folded - nonpro) if nonpro <= folded else (folded | nonpro)
+        self.save_folded(folded)
+        self.page_idx = 0
         self.setup_ui()
 
     def save_active_slot(self, slot):
@@ -582,15 +601,25 @@ class MultiAccountHUD:
             self.setup_ui()
         sort_btn.bind("<Button-1>", toggle_week_sort)
 
+        # 一键收起/展开所有非 Pro 的号（只在展开视图有意义；复用每张卡片右上角的单独折叠状态）
+        nonpro = set(self.nonpro_slots())
+        if nonpro and not self.collapsed_mode:
+            all_folded = nonpro <= self.load_folded()
+            np_btn = tk.Label(sort_bar, text="▸ 展开非Pro" if all_folded else "▾ 收起非Pro", fg=COLOR_CYAN, bg="#11141a",
+                              font=("SF Mono", 9, "bold"), cursor="pointinghand")
+            np_btn.pack(side=tk.LEFT, pady=(0, 4))
+            np_btn.bind("<Button-1>", lambda e: self.toggle_fold_nonpro())
+
         # 2. Body
+        # 先建不 pack：底部切号按钮和页码条先占位，账号再多也不会把它们挤出窗口（2026-11-11）
         self.body = tk.Frame(target, bg=BG_COLOR, padx=8, pady=4)
-        self.body.pack(fill=tk.BOTH, expand=True)
         self.bind_drag(self.body)
 
         if self.collapsed_mode:
             self.render_collapsed_matrix(slots)
         else:
             self.render_expanded_cards(slots)
+        self._cards = list(self.body.winfo_children())
 
         # 3. Bottom Switch Bar（每行最多 4 个按钮，超出另起一行；点一次变「确认?」，再点一次才切换）
         PER_ROW = 6
@@ -619,7 +648,92 @@ class MultiAccountHUD:
                 self._slot_btns[slot] = (btn, txt, fg, bg)
                 btn.bind("<Button-1>", lambda e, s=slot, b=btn, t=txt, f=fg, bg0=bg: self.confirm_switch(s, b, t, f, bg0))
 
+        # 4. 页码条（账号一页放不下才出现）+ 账号区
+        self.pager = tk.Frame(target, bg="#11141a")
+        self.body.pack(fill=tk.BOTH, expand=True)
+        self.layout_pages()
+        if not self.is_standalone and not getattr(self, "_cfg_bound", False):
+            self.container.bind("<Configure>", self.on_container_resize)
+            self._cfg_bound = True
+
         self.root.after_idle(self.fit_height)
+
+    def page_budget(self, reserve_pager):
+        """账号区能用的高度：容器高度减去标题栏、排序栏、底部切号按钮（和页码条）"""
+        target = self.container
+        h = 0
+        if not self.is_standalone:
+            try:
+                target.update_idletasks()
+                h = target.winfo_height() if target.winfo_ismapped() else 0
+            except tk.TclError:
+                h = 0
+            if h < 150:
+                rh = self.root.winfo_height()
+                h = (rh - 77) if rh > 250 else self.root.winfo_screenheight() - 200
+        else:
+            h = self.root.winfo_screenheight() - 110   # 独立窗口会按内容自适应高度，只需别超出屏幕
+        self._last_container_h = h
+        other = sum(w.winfo_reqheight() for w in target.winfo_children() if w is not self.body and w is not self.pager)
+        return max(120, h - other - 10 - (46 if reserve_pager else 0))
+
+    def layout_pages(self):
+        """按卡片实际高度把账号分页，只显示当前页，底部给出 1 2 3 4 页码按钮"""
+        cards = [c for c in getattr(self, "_cards", []) if c.winfo_exists()]
+        if not cards:
+            return
+        self.body.update_idletasks()
+        heights = [c.winfo_reqheight() + 4 for c in cards]
+
+        def split(budget):
+            pages, used = [[]], 0
+            for c, h in zip(cards, heights):
+                if pages[-1] and used + h > budget:
+                    pages.append([])
+                    used = 0
+                pages[-1].append(c)
+                used += h
+            return pages
+
+        pages = split(self.page_budget(False))
+        if len(pages) > 1:
+            pages = split(self.page_budget(True))
+        self.page_idx = max(0, min(getattr(self, "page_idx", 0), len(pages) - 1))
+        for c in cards:
+            c.pack_forget()
+        for c in pages[self.page_idx]:
+            c.pack(fill=tk.X, pady=2)
+
+        for w in self.pager.winfo_children():
+            w.destroy()
+        if len(pages) <= 1:
+            self.pager.pack_forget()
+            return
+        self.pager.pack(fill=tk.X, side=tk.BOTTOM, before=self.body)
+        inner = tk.Frame(self.pager, bg="#11141a")
+        inner.pack(pady=5)
+        for i in range(len(pages)):
+            on = (i == self.page_idx)
+            b = tk.Label(inner, text=str(i + 1), width=3, pady=3, font=("SF Mono", 13, "bold"), cursor="pointinghand",
+                         fg="#0c0e12" if on else TEXT_PRIMARY, bg=COLOR_CYAN if on else "#1e293b",
+                         highlightthickness=1, highlightbackground=COLOR_CYAN if on else "#334155")
+            b.pack(side=tk.LEFT, padx=4)
+            b.bind("<Button-1>", lambda e, i=i: self.goto_page(i))
+
+    def goto_page(self, i):
+        self.page_idx = i
+        self.layout_pages()
+
+    def on_container_resize(self, event):
+        """嵌在调度舱里时窗口高度变了就重新分页（防抖，避免连续触发）"""
+        if event.widget is not self.container or abs(event.height - getattr(self, "_last_container_h", 0)) < 20:
+            return
+        if getattr(self, "_relayout_job", None):
+            try:
+                self.root.after_cancel(self._relayout_job)
+            except Exception:
+                pass
+        self._relayout_job = self.root.after(150, self.layout_pages)
 
     def render_collapsed_matrix(self, slots):
         """紧凑折叠视图：每账号一行，超薄卡片，支持 5 个账号仅占微小屏幕"""
