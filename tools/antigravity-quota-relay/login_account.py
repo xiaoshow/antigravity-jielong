@@ -44,7 +44,23 @@ fi
 ''')
 os.chmod(open_wrapper, 0o755)
 
-slot = sys.argv[1] if len(sys.argv) >= 2 else "4"
+def next_free_slot():
+    """不带参数时自动用第一个空槽位（accN.token 不存在的最小 N），不再默认写 4 号覆盖已有账号"""
+    n = 1
+    while os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")):
+        n += 1
+    return str(n)
+
+slot = sys.argv[1] if len(sys.argv) >= 2 else next_free_slot()
+
+# 本机直连 Google 不通：本地代理端口开着且没设代理时，自动走它
+import socket as _socket
+try:
+    _socket.create_connection(("127.0.0.1", 10808), timeout=0.5).close()
+    for _k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+        os.environ.setdefault(_k, "http://127.0.0.1:10808")
+except OSError:
+    pass
 target_path = os.path.join(VAULT_DIR, f"acc{slot}.token")
 
 print("==================================================", flush=True)
@@ -287,6 +303,7 @@ if not token_to_save:
             print("", flush=True)
             print("🚀 正在向 Google 申请官方授权链接...", flush=True)
 
+            _used_codes = set()   # 已提交过的 code：Google 的 code 只能用一次，重复粘贴必然 invalid_grant
             for attempt in range(1 if choice == "1" else 8):
                 if attempt > 0:
                     token_to_save = find_new_credential()
@@ -386,11 +403,20 @@ if not token_to_save:
                 import select
                 _gone = 0
                 pasted_once = False   # 注意：agy 会自己从终端读 code，脚本未必读得到这一行，所以不能以「粘贴过」作为接收凭据的前提；已有账号靠令牌指纹排除
+                try:   # 丢掉上一轮残留在终端缓冲里的输入（旧链接的 code 对新链接无效）
+                    import termios; termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+                except Exception:
+                    pass
                 _deadline = time.time() + wait_secs
                 for _ in iter(lambda: time.time() < _deadline, False):
                     if choice == "2" and select.select([sys.stdin], [], [], 0)[0]:
                         pasted = sys.stdin.readline().strip()
                         if pasted:
+                            _key = pasted.strip().split("code=")[-1].split("&")[0]
+                            if _key in _used_codes:
+                                print("⚠️ 这串 code 已经提交过了（只能用一次，且只对应当时那条链接），已忽略。请用上方最新链接重新授权，拿新的 code。", flush=True)
+                                continue
+                            _used_codes.add(_key)
                             pasted_once = True
                             relay_callback(pasted)
                     # 检查钥匙串与令牌文件里有没有新账号的凭据
