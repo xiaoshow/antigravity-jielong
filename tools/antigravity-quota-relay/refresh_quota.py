@@ -27,7 +27,7 @@ for s in slots:
             import re as _re
             m=_re.search(r"https://accounts\.google\.com\S+",msg)
             vf=os.path.join(V,f".verify_url_{s}")
-            if m: open(vf,"w").write(m.group(0).replace("\\n","").rstrip('"}'))
+            if m: open(vf,"w").write(m.group(0).replace("\\n","").rstrip('"}')); os.chmod(vf,0o600)
             print(f"{s} 未通过资格验证 NOT_ELIGIBLE {vf if m else ''}",flush=True)
         else: print(s,"失败 rc",r.returncode,msg.strip()[-200:].replace("\n"," "))
         continue
