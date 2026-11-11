@@ -182,6 +182,14 @@ def find_new_credential():
             return _blob
     return None
 
+def copy_to_clipboard(text):
+    """把链接放进系统剪贴板，省得手动选中复制；失败不影响流程"""
+    try:
+        subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=5)
+        return True
+    except Exception:
+        return False
+
 clipboard_token = None
 try:
     cb = subprocess.check_output(["pbpaste"]).decode("utf-8", errors="ignore").strip()
@@ -351,7 +359,10 @@ if not token_to_save:
                     print("🌐 [自动模式] 浏览器已自动调起（弹出账号列表供点选）...", flush=True)
                     print("👉 请在浏览器中点击你要绑定的账号，并确认授权！", flush=True)
                 else:
-                    print("📋 [手动模式] 请复制上方链接，粘贴到你已登录该账号的任意浏览器窗口打开！", flush=True)
+                    if copy_to_clipboard(auth_url):
+                        print("📋 [手动模式] 链接已复制到剪贴板，直接粘贴到你已登录该账号的浏览器窗口打开！", flush=True)
+                    else:
+                        print("📋 [手动模式] 请复制上方链接，粘贴到你已登录该账号的任意浏览器窗口打开！", flush=True)
                     print("👉 在浏览器授权后会显示一串 code（4/0A 开头），本终端只等你把它粘贴进来，不会自动接收。", flush=True)
 
                 if choice == "2":
@@ -534,6 +545,8 @@ if token_to_save:
         print("⚠️ 这个号还没通过 Antigravity 资格验证，查不到额度。", flush=True)
         print("   用登录了这个号的浏览器打开下面的链接完成验证（链接只对这个号有效）：", flush=True)
         print(f"\n{url}\n", flush=True)
+        if url and copy_to_clipboard(url):
+            print("📋 验证链接已复制到剪贴板。", flush=True)
         try:
             ans = input("👉 验证完按回车重查；输入 o 回车在本机浏览器打开链接；输入 s 回车先跳过: ").strip().lower()
         except EOFError:
