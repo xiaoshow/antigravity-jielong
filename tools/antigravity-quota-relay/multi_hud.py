@@ -477,6 +477,21 @@ class MultiAccountHUD:
         return [s for s in ALL_SLOTS if os.path.exists(os.path.join(VAULT_DIR, f"acc{s}.token"))
                 and self.tier_name(self.account_data.get(s, {})) in ("Plus", "Free")]
 
+    HIDE_S_FILE = os.path.join(os.path.expanduser("~/.gemini/account_vault"), ".hide_s")
+
+    def toggle_hide_s(self):
+        """S 号整组隐藏/显示：隐藏时连卡片和底部按钮都不画（当前在用的号和「新号」绑定卡始终保留）"""
+        try:
+            if os.path.exists(self.HIDE_S_FILE):
+                os.remove(self.HIDE_S_FILE)
+            else:
+                open(self.HIDE_S_FILE, "w").close()
+                self.save_folded(self.load_folded() - set(self.nonpro_slots()))  # 清掉旧的「只留一行」状态
+        except OSError:
+            pass
+        self.page_idx = 0
+        self.setup_ui()
+
     def toggle_fold_nonpro(self):
         """非 Pro 的号全都收起了就全部展开，否则全部收起"""
         nonpro = set(self.nonpro_slots())
@@ -550,6 +565,10 @@ class MultiAccountHUD:
         slots = self.get_available_slots()
         self.build_names(slots)
         slots = sorted(slots, key=lambda x: (self.group_rank(x), int(x)))  # P 组在前，S 组在后
+        s_all = [x for x in slots if self.group_rank(x) == 1]
+        hide_s = os.path.exists(self.HIDE_S_FILE)
+        if hide_s:
+            slots = [x for x in slots if self.group_rank(x) != 1 or x == self.active_slot]
 
         if getattr(self, "sort_g_week", False):
             def weekly_key(slot):
@@ -623,14 +642,12 @@ class MultiAccountHUD:
             self.setup_ui()
         sort_btn.bind("<Button-1>", toggle_week_sort)
 
-        # 一键收起/展开所有非 Pro 的号（只在展开视图有意义；复用每张卡片右上角的单独折叠状态）
-        nonpro = set(self.nonpro_slots())
-        if nonpro and not self.collapsed_mode:
-            all_folded = nonpro <= self.load_folded()
-            np_btn = tk.Label(sort_bar, text="▸ 展开 S 号" if all_folded else "▾ 收起 S 号", fg=COLOR_CYAN, bg="#11141a",
+        # 一键隐藏/显示整组 S 号（隐藏后完全不画，不留一行）
+        if s_all:
+            np_btn = tk.Label(sort_bar, text=f"▸ 显示 S 号 ({len(s_all)})" if hide_s else "▾ 收起 S 号", fg=COLOR_CYAN, bg="#11141a",
                               font=("SF Mono", 11, "bold"), cursor="pointinghand")
             np_btn.pack(side=tk.LEFT, pady=(0, 4))
-            np_btn.bind("<Button-1>", lambda e: self.toggle_fold_nonpro())
+            np_btn.bind("<Button-1>", lambda e: self.toggle_hide_s())
 
         # 2. Body
         # 先建不 pack：底部切号按钮和页码条先占位，账号再多也不会把它们挤出窗口（2026-11-11）
