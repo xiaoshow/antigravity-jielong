@@ -208,9 +208,9 @@ if not token_to_save:
     print("  [1] 浏览器自动打开（保留已有登录态，弹出账号选择列表，鼠标点击账号）", flush=True)
     print("  [2] 获取授权链接（手动复制链接，粘贴到你指定的浏览器/分身窗口打开）", flush=True)
     print("  [3] 手动粘贴 Token 字符串（高级备用）", flush=True)
-    choice = input("请选择 (默认 1): ").strip()
+    choice = input("请选择 (默认 2): ").strip()
     if choice not in ("1", "2", "3"):
-        choice = "1"
+        choice = "2"
 
     if choice == "3":
         user_input = input("👉 请粘贴你的 Token 字符串后按回车: ").strip()
