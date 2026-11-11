@@ -452,6 +452,26 @@ class MultiAccountHUD:
         self.save_folded(folded)
         self.setup_ui()
 
+    def build_names(self, slots):
+        """显示用的两条序列：Pro 叫 P1 P2…，其余（Plus/Free/还没数据）叫 S1 S2…，各自按槽位号从小到大排。
+        只是显示名，底层 accN 槽位号不变；档位变了显示名会跟着变。未绑定的槽位叫「新号」。"""
+        names, p, s_ = {}, 0, 0
+        for slot in sorted(slots, key=int):
+            if not os.path.exists(os.path.join(VAULT_DIR, f"acc{slot}.token")):
+                names[slot] = "新号"
+            elif self.tier_name(self.account_data.get(slot, {})) == "Pro":
+                p += 1; names[slot] = f"P{p}"
+            else:
+                s_ += 1; names[slot] = f"S{s_}"
+        self.names = names
+
+    def nm(self, slot):
+        return getattr(self, "names", {}).get(slot) or f"{slot}号"
+
+    def group_rank(self, slot):
+        n = self.nm(slot)
+        return 0 if n.startswith("P") else (1 if n.startswith("S") else 2)
+
     def nonpro_slots(self):
         """已绑定且档位不是 Pro 的号（Plus / Free）；还没拉到额度数据的号不算"""
         return [s for s in ALL_SLOTS if os.path.exists(os.path.join(VAULT_DIR, f"acc{s}.token"))
@@ -528,6 +548,8 @@ class MultiAccountHUD:
         self.time_labels = []
         self.active_model_group = self.detect_active_model_group()
         slots = self.get_available_slots()
+        self.build_names(slots)
+        slots = sorted(slots, key=lambda x: (self.group_rank(x), int(x)))  # P 组在前，S 组在后
 
         if getattr(self, "sort_g_week", False):
             def weekly_key(slot):
@@ -560,7 +582,7 @@ class MultiAccountHUD:
 
         cur_tier = self.tier_of(cur_d)
         if self.switching_slot:
-            rec_text = f" · 正在切换至 {self.active_slot}号..."
+            rec_text = f" · 正在切换至 {self.nm(self.active_slot)}..."
         elif self.is_binding:
             rec_text = " · 正在浏览器授权..."
         elif not self.has_claude(cur_d):
@@ -573,14 +595,14 @@ class MultiAccountHUD:
             else:
                 rec_text = " · 状态极佳"
         elif is_cur_dead:
-            rec_text = f" · 建议切{best_slot}号!" if best_slot and best_slot != self.active_slot else " · Claude已耗尽"
+            rec_text = f" · 建议切{self.nm(best_slot)}!" if best_slot and best_slot != self.active_slot else " · Claude已耗尽"
         elif best_slot and best_slot != self.active_slot and (self.account_data.get(best_slot, {}).get("c5h_pct", 0) > cur_c5 + 30):
-            rec_text = f" · 建议切{best_slot}号"
+            rec_text = f" · 建议切{self.nm(best_slot)}"
         elif cur_c5 < 15:
-            rec_text = f" · 建议切{best_slot}号" if best_slot and best_slot != self.active_slot else " · 配额紧张"
+            rec_text = f" · 建议切{self.nm(best_slot)}" if best_slot and best_slot != self.active_slot else " · 配额紧张"
         else:
             rec_text = " · 状态极佳"
-        title_text = f"桌面 {self.active_slot}号{rec_text}"
+        title_text = f"桌面 {self.nm(self.active_slot)}{rec_text}"
 
         lbl_title = tk.Label(header, text=title_text, fg=TEXT_PRIMARY, bg="#11141a", font=("SF Pro Text", 9, "bold"))
         lbl_title.pack(side=tk.LEFT, pady=6)
@@ -605,8 +627,8 @@ class MultiAccountHUD:
         nonpro = set(self.nonpro_slots())
         if nonpro and not self.collapsed_mode:
             all_folded = nonpro <= self.load_folded()
-            np_btn = tk.Label(sort_bar, text="▸ 展开非Pro" if all_folded else "▾ 收起非Pro", fg=COLOR_CYAN, bg="#11141a",
-                              font=("SF Mono", 9, "bold"), cursor="pointinghand")
+            np_btn = tk.Label(sort_bar, text="▸ 展开 S 号" if all_folded else "▾ 收起 S 号", fg=COLOR_CYAN, bg="#11141a",
+                              font=("SF Mono", 11, "bold"), cursor="pointinghand")
             np_btn.pack(side=tk.LEFT, pady=(0, 4))
             np_btn.bind("<Button-1>", lambda e: self.toggle_fold_nonpro())
 
@@ -637,10 +659,10 @@ class MultiAccountHUD:
                 bg = "#1e293b" if is_active else "#151922"
                 if not has_tok:
                     fg = COLOR_CYAN
-                    txt = f"+No.{slot}"
+                    txt = "+新号"
                 else:
-                    fg = COLOR_GREEN if is_active else TEXT_SECONDARY
-                    txt = f"No.{slot}✓" if is_active else f"No.{slot}"
+                    fg = COLOR_GREEN if is_active else (TIER_PALETTE["Pro"][4] if self.group_rank(slot) == 0 else TIER_PALETTE["Plus"][4])
+                    txt = f"{self.nm(slot)}✓" if is_active else self.nm(slot)
                 border = "#3b82f6" if is_active else BORDER_INACTIVE
 
                 btn = tk.Label(bar, text=txt, fg=fg, bg=bg, font=("SF Mono", 9, "bold"), padx=2, pady=2, cursor="pointinghand", highlightbackground=border, highlightthickness=1)
@@ -755,7 +777,7 @@ class MultiAccountHUD:
             lines = tk.Frame(row, bg=bg)
 
             tier = self.tier_of(data) if has_token else None
-            l_slot = tk.Label(row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
+            l_slot = tk.Label(row, text=self.nm(slot), fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
             l_slot.pack(side=tk.LEFT)
             if has_token:
                 l_slot.configure(cursor="pointinghand")
@@ -823,7 +845,7 @@ class MultiAccountHUD:
             header_row.pack(fill=tk.X, pady=(0, 0))
             self.bind_drag(header_row)
 
-            l_slot = tk.Label(header_row, text=f"{slot}号", fg=accent, bg=bg, font=("SF Pro Display", 10, "bold"))
+            l_slot = tk.Label(header_row, text=self.nm(slot), fg=accent, bg=bg, font=("SF Pro Display", 10, "bold"))
             l_slot.pack(side=tk.LEFT)
             if has_token:
                 l_slot.configure(cursor="pointinghand")
@@ -840,7 +862,7 @@ class MultiAccountHUD:
             if not has_token:
                 btn_bind = tk.Label(
                     header_row,
-                    text=f"尚未绑定 · 点击此处绑定【{slot}号】",
+                    text="尚未绑定 · 点击此处绑定新账号",
                     fg=COLOR_CYAN,
                     bg=bg,
                     font=("SF Pro Text", 8, "bold"),
@@ -857,7 +879,7 @@ class MultiAccountHUD:
                 self.bind_drag(l_mail)
 
             if is_active:
-                l_slot.configure(text=f"▸{slot}号")
+                l_slot.configure(text=f"▸{self.nm(slot)}")
 
             is_folded = slot in self.load_folded()
             fold_btn = tk.Label(header_row, text="＋" if is_folded else "－", fg=self._th["muted"], bg=bg,
