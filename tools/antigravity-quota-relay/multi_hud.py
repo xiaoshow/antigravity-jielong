@@ -11,7 +11,7 @@ Antigravity Multi-Account Quota & Switcher HUD (可折叠多账号接龙版)
 import hashlib, sys, os, re, time, datetime, json, base64, subprocess, threading, glob, urllib.request
 import tkinter as tk
 
-MAX_SLOTS = 20
+MAX_SLOTS = 40
 ROTATING_FILE = os.path.expanduser("~/.gemini/account_vault/.rotating")
 ALL_SLOTS = [str(i) for i in range(1, MAX_SLOTS + 1)]
 VAULT_DIR = os.path.expanduser("~/.gemini/account_vault")

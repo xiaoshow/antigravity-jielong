@@ -2,7 +2,7 @@
 import os,sys,json,base64,subprocess,time
 V=os.path.expanduser("~/.gemini/account_vault"); CACHE=os.path.join(V,"multi_quota_cache.json")
 PH=os.path.join(V,".probe_home"); PC=os.path.join(PH,".gemini","antigravity-cli")
-slots=sys.argv[1:] or [str(i) for i in range(1,21)]
+slots=sys.argv[1:] or [str(i) for i in range(1,41)]
 if os.path.exists(os.path.join(V,".login_lock")) or os.path.exists(os.path.join(V,".rotating")): sys.exit("有登录/轮换锁，退出")
 env=dict(os.environ,HOME=PH,BROWSER="/usr/bin/true",DESKTOP_SESSION="",DISPLAY="")
 for k in ("HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"): env[k]="http://127.0.0.1:10808"

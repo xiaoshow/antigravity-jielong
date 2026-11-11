@@ -519,7 +519,7 @@ if token_to_save:
             cache = {}
         p_n = s_n = 0
         name = tier = None
-        for n in range(1, 21):
+        for n in range(1, 41):
             if not os.path.exists(os.path.join(VAULT_DIR, f"acc{n}.token")):
                 continue
             d = cache.get(str(n)) or {}
