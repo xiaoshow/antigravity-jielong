@@ -34,8 +34,8 @@ COLOR_GREEN = "#10b981"
 COLOR_YELLOW = "#f59e0b"
 COLOR_RED = "#ef4444"
 COLOR_CYAN = "#06b6d4"
-# 模型各自的企业色：Claude 陶土橙、GPT(OpenAI) 绿、Argon(Google) 蓝
-BRAND_COLORS = {"Claude": "#d97757", "GPT": "#10a37f", "Argon": "#4285f4"}
+# 模型各自的企业色：Gemini 绿/青、Claude/GPT 陶土橙、Argon 蓝
+BRAND_COLORS = {"Gemini": "#10a37f", "Claude": "#d97757", "Argon": "#4285f4"}
 COLOR_FULL = "#34d399"   # Pro（有 Argon 额度）
 COLOR_LITE = "#94a3b8"   # Free（无 Argon、无 5h 额度）：灰
 BORDER_LITE = "#2c333f"
@@ -45,10 +45,13 @@ BORDER_FULL = "#1d4a3a"
 # 每档一个色调，整块卡片的字、边框、底色都用同一色系
 # (底色, 底色-活跃, 边框, 边框-活跃, 主色, 标签色, 弱化色)
 TIER_PALETTE = {
-    "Pro":  ("#1a1608", "#241d0a", "#4a3a12", "#fbbf24", "#fbbf24", "#d9ad3c", "#8f7a3a"),   # 金黄
-    "Plus": ("#0e1822", "#122030", "#1c3d5a", "#38bdf8", "#38bdf8", "#6fb9dd", "#4f7f9a"),   # 天蓝
-    "Free": ("#15181e", "#1a1e27", "#2c333f", "#94a3b8", "#cbd5e1", "#94a3b8", "#64748b"),   # 灰
+    "ULTRA": ("#1b0e26", "#271238", "#58227a", "#e879f9", "#e879f9", "#d946ef", "#9353a8"),   # 顶级帝王紫/霓虹洋红
+    "Pro":   ("#1a1608", "#241d0a", "#4a3a12", "#fbbf24", "#fbbf24", "#d9ad3c", "#8f7a3a"),   # 金黄
+    "Plus":  ("#0e1822", "#122030", "#1c3d5a", "#38bdf8", "#38bdf8", "#6fb9dd", "#4f7f9a"),   # 天蓝
+    "Free":  ("#15181e", "#1a1e27", "#2c333f", "#94a3b8", "#cbd5e1", "#94a3b8", "#64748b"),   # 灰
 }
+
+ULTRA_EMAILS = {"liuwnnhk@gmail.com"}
 
 
 TEXT_PRIMARY = "#f8fafc"
@@ -452,14 +455,31 @@ class MultiAccountHUD:
         self.save_folded(folded)
         self.setup_ui()
 
+    def is_ultra(self, slot):
+        return self.account_emails.get(str(slot), "").lower() in ULTRA_EMAILS
+
+    def tier_sort_key(self, slot):
+        """档位排序权重：ULTRA(0) > Pro(1) > Plus(2) > Free(3) > 未拉取数据(4) > 未绑定新号(5)"""
+        if not os.path.exists(os.path.join(VAULT_DIR, f"acc{slot}.token")):
+            return (5, int(slot))
+        if self.is_ultra(slot):
+            return (0, int(slot))
+        t = self.tier_name(self.account_data.get(slot, {}), slot)
+        order = {"Pro": 1, "Plus": 2, "Free": 3}
+        return (order.get(t, 4), int(slot))
+
     def build_names(self, slots):
-        """显示用的两条序列：Pro 叫 P1 P2…，其余（Plus/Free/还没数据）叫 S1 S2…，各自按槽位号从小到大排。
-        只是显示名，底层 accN 槽位号不变；档位变了显示名会跟着变。未绑定的槽位叫「新号」。"""
+        """显示序列：按档位由高到低（ULTRA -> Pro -> Plus -> Free）排序后再编号。
+        ULTRA 独占顶层叫「0号」，Pro 叫 P1 P2…，其余（Plus -> Free）统一叫 S1 S2…。
+        未绑定的叫「新号」"""
         names, p, s_ = {}, 0, 0
-        for slot in sorted(slots, key=int):
+        sorted_slots = sorted(slots, key=self.tier_sort_key)
+        for slot in sorted_slots:
             if not os.path.exists(os.path.join(VAULT_DIR, f"acc{slot}.token")):
                 names[slot] = "新号"
-            elif self.tier_name(self.account_data.get(slot, {})) == "Pro":
+            elif self.is_ultra(slot):
+                names[slot] = "0号"
+            elif self.tier_name(self.account_data.get(slot, {}), slot) == "Pro":
                 p += 1; names[slot] = f"P{p}"
             else:
                 s_ += 1; names[slot] = f"S{s_}"
@@ -470,7 +490,15 @@ class MultiAccountHUD:
 
     def group_rank(self, slot):
         n = self.nm(slot)
-        return 0 if n.startswith("P") else (1 if n.startswith("S") else 2)
+        if n == "0号": return -1  # ULTRA 永远排全屏最顶置第 1 位
+        if n.startswith("P"): return 0
+        if n.startswith("S"):
+            # S 内部细分权重：Plus 排在前，Free 排在后，未拉取在最后
+            t = self.tier_name(self.account_data.get(slot, {}), slot)
+            if t == "Plus": return 1.0
+            if t == "Free": return 1.5
+            return 1.8
+        return 2
 
     def nonpro_slots(self):
         """已绑定且档位不是 Pro 的号（Plus / Free）；还没拉到额度数据的号不算"""
@@ -509,6 +537,19 @@ class MultiAccountHUD:
             with open(self.ACTIVE_FILE, "w") as f:
                 f.write(str(slot))
         except OSError:
+            pass
+        try:
+            email = self.account_emails.get(str(slot), "")
+            hist_path = os.path.join(VAULT_DIR, "slot_switch_history.jsonl")
+            entry = {
+                "ts": time.time(),
+                "iso": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "slot": str(slot),
+                "email": email,
+            }
+            with open(hist_path, "a", encoding="utf-8") as hf:
+                hf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
             pass
 
     def detect_current_slot(self):
@@ -564,11 +605,11 @@ class MultiAccountHUD:
         self.active_model_group = self.detect_active_model_group()
         slots = self.get_available_slots()
         self.build_names(slots)
-        slots = sorted(slots, key=lambda x: (self.group_rank(x), int(x)))  # P 组在前，S 组在后
-        s_all = [x for x in slots if self.group_rank(x) == 1]
+        slots = sorted(slots, key=lambda x: (self.group_rank(x), int(x)))  # 0号 -> P 组 -> Plus 组 -> Free 组
+        s_all = [x for x in slots if self.nm(x).startswith("S")]
         hide_s = os.path.exists(self.HIDE_S_FILE)
         if hide_s:
-            slots = [x for x in slots if self.group_rank(x) != 1 or x == self.active_slot]
+            slots = [x for x in slots if not self.nm(x).startswith("S") or x == self.active_slot]
 
         if getattr(self, "sort_g_week", False):
             def weekly_key(slot):
@@ -599,12 +640,12 @@ class MultiAccountHUD:
         cur_c5 = cur_d.get("c5h_pct", 100.0)
         is_cur_dead = (cur_cwk <= 0.01 or cur_d.get("c5h_reset") == "DISABLED")
 
-        cur_tier = self.tier_of(cur_d)
+        cur_tier = self.tier_of(cur_d, self.active_slot)
         if self.switching_slot:
             rec_text = f" · 正在切换至 {self.nm(self.active_slot)}..."
         elif self.is_binding:
             rec_text = " · 正在浏览器授权..."
-        elif not self.has_claude(cur_d):
+        elif not self.has_claude(cur_d, self.active_slot):
             cur_g5 = cur_d.get("g5h_pct")
             cur_gwk = cur_d.get("gwk_pct", 100.0)
             if cur_gwk <= 0.01:
@@ -629,9 +670,14 @@ class MultiAccountHUD:
 
         btn_ref = tk.Label(header, text="⟳", fg=TEXT_MUTED, bg="#11141a", font=("SF Mono", 12, "bold"), cursor="pointinghand")
         btn_ref.pack(side=tk.RIGHT, pady=4)
-        btn_ref.bind("<Button-1>", lambda e: (self.load_cache(), self.setup_ui()) if self.read_only else self.trigger_refresh())
+        self._btn_ref = btn_ref
+        btn_ref.bind("<Button-1>", lambda e: self.manual_refresh_click() if self.read_only else self.trigger_refresh())
         btn_ref.bind("<Enter>", lambda e: btn_ref.configure(fg=COLOR_CYAN))
         btn_ref.bind("<Leave>", lambda e: btn_ref.configure(fg=TEXT_MUTED))
+
+        self.stamp_lbl = tk.Label(header, text=self.get_cache_stamp(), fg=TEXT_MUTED, bg="#11141a", font=("SF Mono", 8))
+        self.stamp_lbl.pack(side=tk.RIGHT, padx=(0, 4), pady=6)
+        self.bind_drag(self.stamp_lbl)
 
         sort_bar = tk.Frame(target, bg="#11141a", padx=10)
         sort_bar.pack(fill=tk.X)
@@ -678,7 +724,15 @@ class MultiAccountHUD:
                     fg = COLOR_CYAN
                     txt = "+新号"
                 else:
-                    fg = COLOR_GREEN if is_active else (TIER_PALETTE["Pro"][4] if self.group_rank(slot) == 0 else TIER_PALETTE["Plus"][4])
+                    if is_active:
+                        fg = COLOR_GREEN
+                    elif self.group_rank(slot) == -1:
+                        fg = TIER_PALETTE["ULTRA"][4]
+                    elif self.group_rank(slot) == 0:
+                        fg = TIER_PALETTE["Pro"][4]
+                    else:
+                        t = self.tier_name(self.account_data.get(slot, {}), slot)
+                        fg = TIER_PALETTE.get(t, TIER_PALETTE["Plus"])[4]
                     txt = f"{self.nm(slot)}✓" if is_active else self.nm(slot)
                 border = "#3b82f6" if is_active else BORDER_INACTIVE
 
@@ -783,7 +837,7 @@ class MultiAccountHUD:
             data = self.account_data.get(slot, {})
             email = self.account_emails.get(slot, "")
 
-            bg, border, accent = self.card_colors(data, has_token, is_active)
+            bg, border, accent = self.card_colors(data, has_token, is_active, slot)
 
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=8, pady=3)
             card.pack(fill=tk.X, pady=2)
@@ -793,7 +847,7 @@ class MultiAccountHUD:
             self.bind_drag(row)
             lines = tk.Frame(row, bg=bg)
 
-            tier = self.tier_of(data) if has_token else None
+            tier = self.tier_of(data, slot) if has_token else None
             l_slot = tk.Label(row, text=self.nm(slot), fg=accent, bg=bg, font=("SF Mono", 9, "bold"))
             l_slot.pack(side=tk.LEFT)
             if has_token:
@@ -827,20 +881,20 @@ class MultiAccountHUD:
                     lab, pct, reset = seg
                     txt = "周耗" if reset == "DISABLED" else ("--" if pct is None else f"{pct:.0f}%")
                     lbl(lab, max(2, len(lab)), self._th["muted"], ("SF Mono", 7))
-                    lbl(txt, 4, self.pct_color(pct), ("SF Mono", 8, "bold"), anchor="e")
-                    t = lbl("" if (not reset or reset == "DISABLED") else self.format_countdown(reset), 5, self._th["muted"], ("SF Mono", 7), padx=(2, 4))
-                    if reset and reset != "DISABLED":
-                        self.time_labels.append((t, reset))
+                    p_lbl = lbl(txt, 4, self.pct_color(pct), ("SF Mono", 8, "bold"), anchor="e")
+                    show_cd = bool(reset and reset != "DISABLED" and (pct is None or pct < 99.95))
+                    t = lbl("" if not show_cd else self.format_countdown(reset), 6, self._th["muted"], ("SF Mono", 7), padx=(2, 2))
+                    if show_cd:
+                        self.time_labels.append((t, reset, p_lbl, pct))
 
             g_segs = [("1w", data.get("gwk_pct"), data.get("gwk_reset")),
                       ("5h", data.get("g5h_pct"), data.get("g5h_reset")) if data.get("g5h_pct") is not None else None]
             lines.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            q_line(row, "Gemini", g_segs)
             if tier == "full":
                 q_line(row, "Claude", [("1w", data.get("cwk_pct"), data.get("cwk_reset")), ("5h", data.get("c5h_pct"), data.get("c5h_reset"))])
-                q_line(row, "GPT", g_segs)
-                q_line(row, "Argon", [("", data.get("argon_pct"), data.get("argon_reset"))])   # Pro：第三行 Argon
-            else:
-                q_line(row, "GPT", g_segs)
+                if data.get("argon_pct") is not None:
+                    q_line(row, "Argon", [("", data.get("argon_pct"), data.get("argon_reset"))])   # Pro：第三行 Argon
 
     def render_expanded_cards(self, slots):
         """展开模式：完整卡片、进度条与详细倒计时"""
@@ -851,8 +905,8 @@ class MultiAccountHUD:
             data = self.account_data.get(slot, {})
             email = self.account_emails.get(slot, "")
 
-            bg, border, accent = self.card_colors(data, has_token, is_active)
-            tier = self.tier_of(data) if has_token else None
+            bg, border, accent = self.card_colors(data, has_token, is_active, slot)
+            tier = self.tier_of(data, slot) if has_token else None
             card = tk.Frame(self.body, bg=bg, highlightbackground=border, highlightthickness=1, padx=7, pady=2)
             card.pack(fill=tk.X, pady=2)
             self.bind_drag(card)
@@ -870,7 +924,7 @@ class MultiAccountHUD:
             else:
                 self.bind_drag(l_slot)
             if tier:
-                tname = self.tier_name(data)
+                tname = self.tier_name(data, slot)
                 l_tier = tk.Label(header_row, text=tname,
                                   fg=accent, bg=bg, font=("SF Pro Text", 8, "bold"))
                 l_tier.pack(side=tk.LEFT, padx=(4, 0))
@@ -934,32 +988,36 @@ class MultiAccountHUD:
                     if seg is None:   # 占位：和有数据的段用完全相同的三个控件和间距，Wk 列才能上下对齐
                         lbl("", 2, self._th["label"], ("SF Mono", 8, "bold"))
                         lbl("", 4, self._th["muted"], ("SF Mono", 8, "bold"), padx=(3, 3))
-                        lbl("", 5, self._th["muted"], ("SF Mono", 8), padx=(0, 12))
+                        lbl("", 6, self._th["muted"], ("SF Mono", 8), padx=(0, 8))
                         continue
                     pct, reset = seg
                     lbl(lab, 2, self._th["label"], ("SF Mono", 8, "bold"))
-                    lbl(none_txt if pct is None else f"{pct:.0f}%", 4, self.pct_color(pct) if pct is not None else self._th["muted"], ("SF Mono", 8, "bold"), anchor="e", padx=(3, 3))
-                    t = lbl("--" if not reset else self.format_countdown(reset), 5, self._th["muted"], ("SF Mono", 8), padx=(0, 12))
-                    if reset:
-                        self.time_labels.append((t, reset))
+                    p_lbl = lbl(none_txt if pct is None else f"{pct:.0f}%", 4, self.pct_color(pct) if pct is not None else self._th["muted"], ("SF Mono", 8, "bold"), anchor="e", padx=(3, 3))
+                    # 满额（100%）时接口返回的是浮动伪时间（now+7d / now+5h），不显示假倒计时，直接显示 —
+                    is_full = (pct is not None and pct >= 99.95 and reset != "DISABLED")
+                    t = lbl("—" if (not reset or is_full) else self.format_countdown(reset), 6, self._th["muted"], ("SF Mono", 8), padx=(0, 8))
+                    if reset and not is_full:
+                        self.time_labels.append((t, reset, p_lbl, pct))
 
-            if self.has_claude(data) and (cwk_pct is not None or c5h_pct is not None):
+            exp_row("Gemini", (g5h_pct, g5h_reset) if g5h_pct is not None else None, (gwk_pct, gwk_reset))
+            if self.has_claude(data, slot) and (cwk_pct is not None or c5h_pct is not None):
                 exp_row("Claude", (c5h_pct, c5h_reset) if c5h_pct is not None else None, (cwk_pct, cwk_reset), none_txt="未开通")
-            exp_row("GPT", (g5h_pct, g5h_reset) if g5h_pct is not None else None, (gwk_pct, gwk_reset))
             if argon_pct is not None:  # 不支持 Argon 的账号不显示该行
                 exp_row("Argon", None, (argon_pct, argon_reset))
 
-    def tier_name(self, data):
-        """Pro=有 Argon（1/3号）；Plus=无 Argon 但 Gemini 有 5h 复位（4号）；Free=只有 Gemini 周额度（2号）；无数据返回 None"""
+    def tier_name(self, data, slot=None):
+        """ULTRA=旗舰0号；Pro=有 Argon；Plus=无 Argon 但 Gemini 有 5h 复位；Free=只有 Gemini 周额度；无数据返回 None"""
+        if slot is not None and self.is_ultra(slot):
+            return "ULTRA"
         if not data:
             return None
         if data.get("argon_pct") is not None:
             return "Pro"
         return "Plus" if data.get("g5h_pct") is not None else "Free"
 
-    def card_colors(self, data, has_token, is_active):
+    def card_colors(self, data, has_token, is_active, slot=None):
         """按档位给整块卡片配色：返回 (底色, 边框, 主色)，并把本卡的字色存到 self._th"""
-        name = self.tier_name(data) if has_token else None
+        name = self.tier_name(data, slot) if has_token else None
         if not name:
             self._th = {"label": TEXT_SECONDARY, "muted": TEXT_MUTED, "hi": COLOR_CYAN, "ok": COLOR_GREEN}
             return CARD_BG, BORDER_INACTIVE, TEXT_PRIMARY
@@ -977,12 +1035,16 @@ class MultiAccountHUD:
             return "#fb923c"
         return self._th["ok"]
 
-    def has_claude(self, data):
-        """是否显示/计入 Claude 额度：Pro 有；Plus（有 Gemini 5h）也有 Claude 额度（2026-10-25 用户确认）；Free 没有"""
-        return self.tier_of(data) != "lite" or self.tier_name(data) == "Plus"
+    def has_claude(self, data, slot=None):
+        """是否显示/计入 Claude 额度：ULTRA/Pro 有；Plus（有 Gemini 5h）也有 Claude 额度；Free 没有"""
+        if slot is not None and self.is_ultra(slot):
+            return True
+        return self.tier_of(data, slot) != "lite" or self.tier_name(data, slot) == "Plus"
 
-    def tier_of(self, data):
-        """满血=有 Argon 额度；残血=没有；尚无数据返回 None"""
+    def tier_of(self, data, slot=None):
+        """满血=ULTRA 或有 Argon 额度；残血=没有；尚无数据返回 None"""
+        if slot is not None and self.is_ultra(slot):
+            return "full"
         if not data:
             return None
         return "full" if data.get("argon_pct") is not None else "lite"
@@ -996,9 +1058,62 @@ class MultiAccountHUD:
             return COLOR_YELLOW
         return COLOR_GREEN
 
+    def _active_updated_ts(self):
+        """优先读取当前活跃号自身的 updated_at 时间戳，回退到缓存文件 mtime"""
+        try:
+            d = self.account_data.get(self.active_slot, {})
+            u = d.get("updated_at")
+            if u:
+                return datetime.datetime.fromisoformat(u.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+        try:
+            return os.path.getmtime(CACHE_FILE)
+        except OSError:
+            return 0.0
+
+    def get_cache_stamp(self):
+        ts = self._active_updated_ts()
+        if ts <= 0:
+            return "--:--"
+        dt = datetime.datetime.fromtimestamp(ts)
+        age = time.time() - ts
+        s = dt.strftime("%H:%M")
+        return f"{s}(旧)" if age > 600 else s
+
+    def manual_refresh_click(self):
+        """只读嵌入模式下点击 ⟳ 或自动兜底：仅刷新当前活跃号与主力号（绝不扫描失效号防浏览器弹窗），并重读本地缓存"""
+        if getattr(self, "_ro_refreshing", False):
+            return
+        self._ro_refreshing = True
+        self._last_ro_auto_ts = time.time()
+        if hasattr(self, "_btn_ref") and self._btn_ref.winfo_exists():
+            self._btn_ref.configure(text="…", fg=COLOR_YELLOW)
+        def _bg():
+            try:
+                rq = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refresh_quota.py")
+                safe_slots = []
+                for s in (self.active_slot, "19", "1", "2", "3"):
+                    if (s and s not in safe_slots
+                            and os.path.exists(os.path.join(VAULT_DIR, f"acc{s}.token"))
+                            and not os.path.exists(os.path.join(VAULT_DIR, f".verify_url_{s}"))
+                            and not os.path.exists(os.path.join(VAULT_DIR, f".auth_expired_{s}"))):
+                        safe_slots.append(str(s))
+                if safe_slots:
+                    subprocess.run(["/opt/homebrew/bin/python3", rq, *safe_slots], timeout=95, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+            def _done():
+                self._ro_refreshing = False
+                self._cache_mtime = os.path.getmtime(CACHE_FILE) if os.path.exists(CACHE_FILE) else 0
+                self.load_cache()
+                self.setup_ui()
+            self.root.after(0, _done)
+        threading.Thread(target=_bg, daemon=True).start()
+
     def format_countdown(self, iso_str):
         if not iso_str:
-            return "--"
+            return "—"
         if iso_str == "DISABLED":
             return "周耗尽"
         try:
@@ -1006,16 +1121,20 @@ class MultiAccountHUD:
             delta = target - datetime.datetime.now(datetime.timezone.utc)
             s = int(delta.total_seconds())
             if s <= 0:
-                return "READY"
+                return "已恢复"
             if s >= 86400:
-                return f"{s / 86400:.1f}d"
+                d, rem = divmod(s, 86400)
+                h = rem // 3600
+                return f"{d}d{h}h" if h > 0 else f"{d}d"
             if s >= 3600:
-                return f"{s / 3600:.1f}h"
+                h, rem = divmod(s, 3600)
+                m = rem // 60
+                return f"{h}h{m:02d}m" if h < 10 else f"{h}h"
             if s >= 60:
                 return f"{s // 60}m"
             return f"{s}s"
         except Exception:
-            return "--"
+            return "—"
 
     def calc_recommend_slot(self):
         best_slot = None
@@ -1102,9 +1221,9 @@ class MultiAccountHUD:
             try:
                 with self.keychain_lock:
                     self.apply_slot_credentials(slot)
-                    pids = subprocess.getoutput("pgrep -f Antigravity").strip().split()
+                    pids = subprocess.getoutput("LC_ALL=C pgrep -f Antigravity.app/Contents/MacOS/Antigravity").strip().split()
                     if pids and pids[0]:
-                        subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
+                        subprocess.run(["/usr/bin/env", "LC_ALL=C", "pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
                         time.sleep(0.5)
                         self.apply_slot_credentials(slot)
             finally:
@@ -1157,7 +1276,16 @@ class MultiAccountHUD:
                                 pf.write(dec_tok)
                             os.chmod(os.path.join(probe_cli, "antigravity-oauth-token"), 0o600)
                             cmd = ["/Users/weinliu/.local/bin/agy", "--output-format", "json", "-p", "/usage"]
+                            no_browser_bin = os.path.join(VAULT_DIR, ".no_browser_bin")
+                            os.makedirs(no_browser_bin, mode=0o700, exist_ok=True)
+                            for _c in ("open", "osascript", "xdg-open"):
+                                _cp = os.path.join(no_browser_bin, _c)
+                                if not os.path.exists(_cp):
+                                    with open(_cp, "w", encoding="utf-8") as _wf:
+                                        _wf.write("#!/bin/sh\nexit 0\n")
+                                    os.chmod(_cp, 0o755)
                             probe_env = dict(os.environ, HOME=probe_home)
+                            probe_env["PATH"] = f"{no_browser_bin}:" + probe_env.get("PATH", "/usr/bin:/bin")
                             probe_env["BROWSER"] = "/usr/bin/true"
                             probe_env["DESKTOP_SESSION"] = ""
                             probe_env["DISPLAY"] = ""
@@ -1167,10 +1295,8 @@ class MultiAccountHUD:
                                 os.makedirs(os.path.dirname(probe_kc), mode=0o700, exist_ok=True)
                                 subprocess.run(["security", "create-keychain", "-p", "", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
                                 subprocess.run(["security", "set-keychain-settings", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
-                                subprocess.run(["security", "default-keychain", "-d", "user", "-s", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
-                                subprocess.run(["security", "list-keychains", "-d", "user", "-s", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
                             subprocess.run(["security", "unlock-keychain", "-p", "", probe_kc], env=probe_env, check=False, stderr=subprocess.DEVNULL)
-                            subprocess.run(["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token],
+                            subprocess.run(["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", slot_token, probe_kc],
                                            env=probe_env, check=True, stderr=subprocess.DEVNULL)
                             res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=probe_env)
                             if res.returncode == 0:
@@ -1198,6 +1324,8 @@ class MultiAccountHUD:
                                         frac = b.get("remaining_fraction", 0.0) * 100.0
                                         rtime = b.get("reset_time", "")
                                         
+                                        if not disabled and frac >= 99.95:
+                                            rtime = ""
                                         if "argon" in bid or "argon" in gname:
                                             slot_dict["argon_pct"] = frac
                                             slot_dict["argon_reset"] = rtime
@@ -1261,8 +1389,19 @@ class MultiAccountHUD:
             pass
 
     def tick(self):
-        for lbl, rtime in getattr(self, "time_labels", []):
-            lbl.configure(text=self.format_countdown(rtime))
+        any_expired = False
+        for item in getattr(self, "time_labels", []):
+            lbl, rtime, p_lbl, pct = item
+            cd_txt = self.format_countdown(rtime)
+            if cd_txt == "已恢复":
+                any_expired = True
+                lbl.configure(text="待刷新", fg=COLOR_YELLOW)
+            else:
+                lbl.configure(text=cd_txt)
+
+        if hasattr(self, "stamp_lbl") and self.stamp_lbl.winfo_exists():
+            st = self.get_cache_stamp()
+            self.stamp_lbl.configure(text=st, fg=COLOR_YELLOW if "(旧)" in st else TEXT_MUTED)
 
         # 检查并清理陈旧锁文件（>60s）
         if os.path.exists(ROTATING_FILE):
@@ -1285,7 +1424,7 @@ class MultiAccountHUD:
         if not self.read_only and not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
         elif self.read_only:
-            # 只读模式：缓存文件变了才重读并重画（以前只重读不重画，屏幕上一直是启动时的旧数字，2026-11-10）
+            # 只读模式：缓存文件变了立即重读并重画
             try:
                 mt = os.path.getmtime(CACHE_FILE)
             except OSError:
@@ -1297,6 +1436,14 @@ class MultiAccountHUD:
                 self.account_emails = self.load_emails()   # 新绑定的号要带上邮箱
                 if not first:
                     self.setup_ui()
+            # 兜底自动静默刷新：当倒计时刚跨过复位点，或当前活跃号缓存超过 240s 未更新时，后台静默拉取最新真实额度
+            active_age = now - self._active_updated_ts()
+            since_ro = now - getattr(self, "_last_ro_auto_ts", 0)
+            if (not getattr(self, "_ro_refreshing", False)
+                    and not os.path.exists(ROTATING_FILE)
+                    and not os.path.exists(LOCK_FILE)
+                    and ((any_expired and since_ro >= 60) or (active_age >= 240 and since_ro >= 180))):
+                self.manual_refresh_click()
             
         self.root.after(1000, self.tick)
 

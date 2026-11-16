@@ -626,8 +626,8 @@ class MultiAccountHUD:
                     self.apply_slot_credentials(slot)
                     subprocess.run(["osascript", "-e", 'tell application "Antigravity" to quit'], check=False)
                     time.sleep(0.9)
-                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
-                    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
+                    subprocess.run(["/usr/bin/env", "LC_ALL=C", "pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
+                    subprocess.run(["/usr/bin/env", "LC_ALL=C", "pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
                     time.sleep(0.5)
                     # 再次确保持久化写入，彻底杜绝残留进程回写
                     self.apply_slot_credentials(slot)

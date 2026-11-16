@@ -37,6 +37,13 @@ if email and os.path.exists(app_st):
     with open(app_st, 'r', encoding='utf-8') as f: st = json.load(f)
     st['jetski.onboarding.lastLoginUsername'] = email
     with open(app_st, 'w', encoding='utf-8') as f: json.dump(st, f, indent=2, ensure_ascii=False)
+try:
+    import time, datetime
+    hp = os.path.expanduser('$VAULT_DIR/slot_switch_history.jsonl')
+    with open(hp, 'a', encoding='utf-8') as hf:
+        hf.write(json.dumps({'ts': time.time(), 'iso': datetime.datetime.now().astimezone().isoformat(timespec='seconds'), 'slot': '$SLOT', 'email': (email or '').lower()}, ensure_ascii=False) + '\n')
+except Exception:
+    pass
 print(email)
 "
 }
@@ -49,8 +56,8 @@ if pgrep -x "Antigravity" > /dev/null; then
     echo "🔄 正在重载桌面 App 与后台服务（会话与项目上下文 100% 保持）..."
     osascript -e 'tell application "Antigravity" to quit' 2>/dev/null
     sleep 0.9
-    pkill -9 -f "Antigravity.app/Contents/Resources/bin/language_server" 2>/dev/null
-    pkill -9 -f "Antigravity.app/Contents/MacOS/Antigravity" 2>/dev/null
+    LC_ALL=C pkill -9 -f "Antigravity.app/Contents/Resources/bin/language_server" 2>/dev/null
+    LC_ALL=C pkill -9 -f "Antigravity.app/Contents/MacOS/Antigravity" 2>/dev/null
     sleep 0.5
     apply_creds > /dev/null
     open -a "Antigravity"

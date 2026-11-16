@@ -41,6 +41,20 @@ try:
 except Exception:
     pass
 
+try:
+    import datetime as _dt
+    hist_path = os.path.join(vault_dir, "slot_switch_history.jsonl")
+    entry = {
+        "ts": time.time(),
+        "iso": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "slot": str(slot),
+        "email": email.lower() if email else "",
+    }
+    with open(hist_path, "a", encoding="utf-8") as hf:
+        hf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+except Exception:
+    pass
+
 # 2. 写入系统钥匙串与凭证文件
 subprocess.run(
     ["security", "add-generic-password", "-U", "-s", "gemini", "-a", "antigravity", "-w", raw_token],
@@ -70,13 +84,13 @@ if email and os.path.exists(app_storage):
 print(f"✅ 系统钥匙串与凭证已切换至【{slot}号账号】({email or '已就绪'})！")
 
 # 4. 如果 Antigravity 桌面端正在运行，进行平滑热重载（保持所有会话与标签页）
-pids = subprocess.getoutput("pgrep -f Antigravity").strip().split()
+pids = subprocess.getoutput("LC_ALL=C pgrep -f Antigravity.app/Contents/MacOS/Antigravity").strip().split()
 if pids and pids[0]:
     print("🔄 正在平滑重启 Antigravity 桌面端与后台语言服务...")
     subprocess.run(["osascript", "-e", 'tell application "Antigravity" to quit'], check=False)
     time.sleep(0.8)
-    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
-    subprocess.run(["pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
+    subprocess.run(["/usr/bin/env", "LC_ALL=C", "pkill", "-9", "-f", "Antigravity.app/Contents/Resources/bin/language_server"], check=False)
+    subprocess.run(["/usr/bin/env", "LC_ALL=C", "pkill", "-9", "-f", "Antigravity.app/Contents/MacOS/Antigravity"], check=False)
     time.sleep(0.5)
     # 再次确保钥匙串稳固
     subprocess.run(
