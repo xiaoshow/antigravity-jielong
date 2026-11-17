@@ -219,92 +219,49 @@ class MultiAccountHUD:
         except Exception:
             pass
 
-    def recent_agy_refresh(self, within=900):
-        """终端里常驻的 agy 会话每小时刷新一次令牌，并把它内存里那个号的凭据写回钥匙串（2026-10-26 实测：整点后 20-45 秒钥匙串变回 1 号）。
-        刚刷新过就说明钥匙串的变化是回写，不是用户切号。"""
-        try:
-            logs = glob.glob(os.path.expanduser("~/.gemini/antigravity-cli/log/cli-*.log"))
-            if not logs:
-                return False
-            with open(max(logs, key=os.path.getmtime), "rb") as f:
-                f.seek(0, 2)
-                f.seek(max(0, f.tell() - 60000))
-                lines = [l for l in f.read().decode("utf-8", "ignore").splitlines() if "token refreshed" in l]
-            if not lines:
-                return False
-            m = re.match(r"I(\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})", lines[-1])
-            if not m:
-                return False
-            mo, dd, hh, mi, ss = map(int, m.groups())
-            ts = datetime.datetime(datetime.datetime.now().year, mo, dd, hh, mi, ss).timestamp()
-            return 0 <= time.time() - ts <= within
-        except Exception:
-            return False
+    def live_slot(self, blob):
+        """只用本地凭据识别账号，不联网，也不改变登录状态。"""
+        fingerprint = self._refresh_hash(blob)
+        if not fingerprint:
+            return None
+        for slot in ALL_SLOTS:
+            try:
+                with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
+                    if self._refresh_hash(f.read()) == fingerprint:
+                        return slot
+            except OSError:
+                continue
+        return None
 
     def adopt_live(self):
-        """以系统中实际生效的凭据/状态为准判定当前账号（异步跟随 CLI / 桌面 App / 钥匙串），
-        返回当前活跃账号的凭据快照。"""
-        match = None
-
-        # 显式切号记录是用户选择；钥匙串可能被旧 CLI 会话异步回写。
-        # 有效记录存在时只同步显示，不把回写误判为切号或反向修改凭据。
+        """跟随显式切号记录；旧会话的凭据回写不能成为新的切号指令。"""
         selected = self.load_active_slot()
-        if selected in ALL_SLOTS:
-            token_path = os.path.join(VAULT_DIR, f"acc{selected}.token")
-            try:
-                with open(token_path) as f:
-                    snapshot = f.read().strip()
-            except OSError:
-                snapshot = ""
-            if snapshot:
-                if selected != self.active_slot:
-                    self.active_slot = selected
-                    self.root.after(0, self.setup_ui)
-                return snapshot
-
-        # 不看 jetski-standalone-oauth-token：它跟着钥匙串里被借用的凭据一起变（轮换时依次变成 1、2、3…），
-        # 刷新开始前读到的往往是上一轮借用的残留，会把刚切好的 8 号改回 1/2（2026-10-26 实测）。
-
-        # 2. 检查钥匙串凭据
-        live = self.read_live_blob()
-        if not match and live:
-            h = self._refresh_hash(live)
-            if h:
-                for slot in ALL_SLOTS:
-                    try:
-                        with open(os.path.join(VAULT_DIR, f"acc{slot}.token")) as f:
-                            if self._refresh_hash(f.read()) == h:
-                                match = slot
-                                break
-                    except OSError:
-                        pass
-            if not match:
-                email = self.extract_email_from_token(live)
-                if email:
-                    for slot, e in self.account_emails.items():
-                        if e and e.lower() == email.lower():
-                            match = slot
-                            break
-
-        if match and match != self.active_slot and not os.path.exists(os.path.join(VAULT_DIR, ".rotating")) and self.recent_agy_refresh():
-            # 钥匙串在 agy 刷新令牌后变了、.active_slot 没动：是 agy 回写，不是切号——把当前号的凭据写回去
-            self.trace_write(f"guard_restore(live={match})", self.active_slot)
-            self.apply_slot_credentials(self.active_slot)
-            match = None
-        if match and match != self.active_slot:
-            self.active_slot = match
-            self.save_active_slot(match)
-            self.apply_slot_credentials(match)
+        # 标记缺失、写到一半或凭据不可读时保持原选择，绝不从钥匙串反向写标记。
+        if selected not in ALL_SLOTS:
+            return ""
+        try:
+            with open(os.path.join(VAULT_DIR, f"acc{selected}.token")) as f:
+                snapshot = f.read().strip()
+        except OSError:
+            return ""
+        if not snapshot or not self._refresh_hash(snapshot):
+            return ""
+        if selected != self.active_slot:
+            self.active_slot = selected
             self.root.after(0, self.setup_ui)
 
-        tpath = os.path.join(VAULT_DIR, f"acc{self.active_slot}.token")
-        if os.path.exists(tpath):
-            try:
-                with open(tpath) as f:
-                    return f.read().strip()
-            except Exception:
-                pass
-        return live or ""
+        # 旧 agy 会话会在数分钟或数小时后再次回写其内存里的旧账号。
+        # 识别到另一已绑定账号时修复实际凭据，不改用户选择，也不追加切号历史。
+        # 不使用“最近 15 分钟刷新过”判断，旧会话的回写没有固定时间窗。
+        if not self.switching_slot and not os.path.exists(ROTATING_FILE) and not os.path.exists(LOCK_FILE):
+            live = self.read_live_blob()
+            live_slot = self.live_slot(live)
+            if live_slot and live_slot != selected:
+                # 读取钥匙串期间可能发生显式切号，旧快照不得覆盖新选择。
+                if self.load_active_slot() == selected and not self.switching_slot:
+                    self.trace_write(f"repair_stale_credentials(live={live_slot})", selected)
+                    self.write_live_blob(snapshot)
+        return snapshot
 
     def external_switch(self):
         """CLI/switch.py 在轮换途中切号：.active_slot 被写成了别的号，返回新槽位，否则 None"""
@@ -336,6 +293,11 @@ class MultiAccountHUD:
             pass
 
     def apply_slot_credentials(self, slot):
+        # 凭据应用是切号的后续步骤，不能让迟到的线程重新发布旧选择。
+        selected = self.load_active_slot()
+        if selected is not None and selected != str(slot):
+            self.trace_write("skip_superseded_credentials", slot)
+            return False
         self.trace_write("apply_creds", slot)
         if os.path.exists(LOCK_FILE):
             return False
@@ -372,7 +334,6 @@ class MultiAccountHUD:
                     json.dump(st, af, indent=2, ensure_ascii=False)
             except Exception:
                 pass
-        self.save_active_slot(slot)
         return True
 
     def sync_app_login(self, slot):
@@ -436,7 +397,8 @@ class MultiAccountHUD:
         """用户上一次明确选择/绑定的号。优先于钥匙串检测：每轮拉额度会临时轮换钥匙串里的凭据，
         在轮换途中启动（或重启）会把轮换到的号误判成当前号，之后又被它「还原」覆盖用户真正在用的号。"""
         try:
-            v = open(self.ACTIVE_FILE).read().strip()
+            with open(self.ACTIVE_FILE) as f:
+                v = f.read().strip()
             return v if v in tuple(ALL_SLOTS) else None
         except OSError:
             return None
@@ -541,8 +503,16 @@ class MultiAccountHUD:
     def save_active_slot(self, slot):
         self.trace_write("save_active", slot)
         try:
-            with open(self.ACTIVE_FILE, "w") as f:
-                f.write(str(slot))
+            # 原子替换，观察者不会读到截断后的空文件。
+            import tempfile
+            fd, temp_path = tempfile.mkstemp(prefix=".active_slot-", dir=VAULT_DIR)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(str(slot))
+                os.replace(temp_path, self.ACTIVE_FILE)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
         except OSError:
             pass
         try:
@@ -1423,10 +1393,14 @@ class MultiAccountHUD:
         if (now - getattr(self, "_last_watch", 0) >= 2 and not self.is_fetching and not self.is_binding
                 and not self.switching_slot and not os.path.exists(ROTATING_FILE) and not os.path.exists(LOCK_FILE)):
             self._last_watch = now
-            try:
-                self.adopt_live()
-            except Exception:
-                pass
+            # 不阻塞 Tk，也不与切号线程同时写凭据。
+            if self.keychain_lock.acquire(blocking=False):
+                try:
+                    self.adopt_live()
+                except Exception:
+                    pass
+                finally:
+                    self.keychain_lock.release()
 
         if not self.read_only and not self.is_fetching and not self.is_binding and not self.switching_slot and (time.time() - self.last_fetch_ts >= 30):
             self.trigger_refresh()
