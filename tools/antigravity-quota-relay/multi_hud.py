@@ -246,14 +246,21 @@ class MultiAccountHUD:
         返回当前活跃账号的凭据快照。"""
         match = None
 
-        # 1. 优先检查 .active_slot 文件（由 switch.py / agy-switch 显式切换写入）
-        try:
-            if os.path.exists(self.ACTIVE_FILE):
-                v = open(self.ACTIVE_FILE).read().strip()
-                if v in ALL_SLOTS and v != self.active_slot and os.path.exists(os.path.join(VAULT_DIR, f"acc{v}.token")):
-                    match = v
-        except Exception:
-            pass
+        # 显式切号记录是用户选择；钥匙串可能被旧 CLI 会话异步回写。
+        # 有效记录存在时只同步显示，不把回写误判为切号或反向修改凭据。
+        selected = self.load_active_slot()
+        if selected in ALL_SLOTS:
+            token_path = os.path.join(VAULT_DIR, f"acc{selected}.token")
+            try:
+                with open(token_path) as f:
+                    snapshot = f.read().strip()
+            except OSError:
+                snapshot = ""
+            if snapshot:
+                if selected != self.active_slot:
+                    self.active_slot = selected
+                    self.root.after(0, self.setup_ui)
+                return snapshot
 
         # 不看 jetski-standalone-oauth-token：它跟着钥匙串里被借用的凭据一起变（轮换时依次变成 1、2、3…），
         # 刷新开始前读到的往往是上一轮借用的残留，会把刚切好的 8 号改回 1/2（2026-10-26 实测）。
